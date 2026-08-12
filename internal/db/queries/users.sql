@@ -12,18 +12,11 @@ SELECT * FROM users WHERE id = $1;
 SELECT * FROM users WHERE email = $1;
 
 -- name: UpdateUserProfile :one
--- UPDATE users
--- SET user_name = $2, updated_at = NOW()
--- WHERE id = $1
--- RETURNING *;
--- name: UpdateUserByID :one
 UPDATE users
-SET
-  user_name            = COALESCE(sqlc.narg(user_name), user_name),
-  updated_at            = NOW()
-WHERE id = sqlc.arg(id)
+SET user_name = $2, updated_at = NOW()
+WHERE id = $1
 RETURNING *;
--- name: UpdatePasswordHash :exec
+-- name: UpdatePassword :exec
 UPDATE users SET password_hash = $2, token_version = token_version + 1, updated_at = NOW()
 WHERE id = $1;
 -- name: UpdateUserRole :exec

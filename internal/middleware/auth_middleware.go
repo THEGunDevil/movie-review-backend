@@ -30,9 +30,9 @@ var allowedPathsForBannedUsers = map[string]bool{
 // other over time.
 func setUserContext(c *gin.Context, userUUID uuid.UUID, user gen.User) {
 	c.Set("userID", userUUID)
-	c.Set("role", user.Role.String)
-	c.Set("isBanned", user.IsBanned.Bool)
-	c.Set("isPermanentBan", user.IsPermanentBan.Bool)
+	c.Set("role", user.Role)
+	c.Set("isBanned", user.IsBanned)
+	c.Set("isPermanentBan", user.IsPermanentBan)
 	c.Set("banReason", user.BanReason.String)
 	c.Set("banUntil", user.BanUntil.Time)
 }
@@ -120,7 +120,7 @@ func AuthMiddleware() gin.HandlerFunc {
 		log.Println("✅ Token version validated")
 
 		// Handle banned users
-		if user.IsBanned.Bool {
+		if user.IsBanned {
 			log.Println("⚠️ User is banned")
 
 			if allowedPathsForBannedUsers[c.FullPath()] {
@@ -136,7 +136,7 @@ func AuthMiddleware() gin.HandlerFunc {
 			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
 				"error":            "your account is banned",
 				"reason":           user.BanReason.String,
-				"is_permanent_ban": user.IsPermanentBan.Bool,
+				"is_permanent_ban": user.IsPermanentBan,
 				"ban_until":        user.BanUntil.Time,
 			})
 			return

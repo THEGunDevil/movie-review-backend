@@ -60,11 +60,12 @@ func GetUsersHandler(c *gin.Context) {
 		response = append(response, models.UserResponse{
 			ID:             user.ID.Bytes,
 			UserName:       user.UserName,
+			Role:           user.Role,
 			Email:          user.Email,
-			IsBanned:       user.IsBanned.Bool,
+			IsBanned:       user.IsBanned,
 			BanUntil:       &user.BanUntil.Time,
 			BanReason:      user.BanReason.String,
-			IsPermanentBan: user.IsPermanentBan.Bool,
+			IsPermanentBan: user.IsPermanentBan,
 			CreatedAt:      user.CreatedAt.Time,
 		})
 	}
@@ -92,38 +93,19 @@ func GetUserByIDHandler(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
 		return
 	}
-
-	// 2️⃣ Fetch balances for this user
-	balances, err := db.Q.ListBalances(c.Request.Context(), service.UUIDToPGType(targetID))
-	if err != nil {
-		balances = []gen.Balance{} // empty slice on error
-	}
-
-	// 3️⃣ Convert to models.Balance (JSON-friendly)
-	balanceModels, err := service.ToBalanceModels(balances)
-	if err != nil {
-		log.Printf("⚠️ Failed to convert balances: %v", err)
-		balanceModels = []models.Balance{} // fallback
-	}
 	userRes := models.UserResponse{
 		ID:             user.ID.Bytes,
 		UserName:       user.UserName,
 		Email:          user.Email,
-		Role:           user.Role.String,
-		IsBanned:       user.IsBanned.Bool,
+		Role:           user.Role,
+		IsBanned:       user.IsBanned,
 		BanUntil:       &user.BanUntil.Time,
 		BanReason:      user.BanReason.String,
-		IsPermanentBan: user.IsPermanentBan.Bool,
+		IsPermanentBan: user.IsPermanentBan,
 		CreatedAt:      user.CreatedAt.Time,
 	}
-	// 4️⃣ Build response
-	resp := gin.H{
-		"user":     userRes,
-		"balances": balanceModels,
-	}
-
-	log.Printf("👤 Returning user data for user %v (banned: %v) with %d balances", user.ID, user.IsBanned.Bool, len(balanceModels))
-	c.JSON(http.StatusOK, resp)
+	log.Printf("👤 Returning user data for user %v (banned: %v)", user.ID, user.IsBanned)
+	c.JSON(http.StatusOK, userRes)
 }
 
 // UpdateUserByIDHandler updates user by ID
@@ -142,11 +124,11 @@ func UpdateUserByIDHandler(c *gin.Context) {
 		return
 	}
 	params := gen.UpdateUserProfileParams{
-		ID: pgtype.UUID{Bytes: parsedID, Valid: true},
+		ID:       pgtype.UUID{Bytes: parsedID, Valid: true},
+		UserName: *req.UserName,
 	}
-
 	if req.UserName != nil {
-		params.UserName = pgtype.Text{String: *req.UserName, Valid: true}
+		params.UserName = *req.UserName
 	}
 	// Save changes
 	updatedUser, err := db.Q.UpdateUserProfile(c, params)
@@ -160,12 +142,48 @@ func UpdateUserByIDHandler(c *gin.Context) {
 		ID:             updatedUser.ID.Bytes,
 		UserName:       updatedUser.UserName,
 		Email:          updatedUser.Email,
-		IsBanned:       updatedUser.IsBanned.Bool,
+		Role:           updatedUser.Role,
+		IsBanned:       updatedUser.IsBanned,
 		BanUntil:       &updatedUser.BanUntil.Time,
 		BanReason:      updatedUser.BanReason.String,
-		IsPermanentBan: updatedUser.IsPermanentBan.Bool,
+		IsPermanentBan: updatedUser.IsPermanentBan,
 		CreatedAt:      updatedUser.CreatedAt.Time,
 	}
 
 	c.JSON(http.StatusOK, resp)
+}
+func UpdateUserPassByIDHandler(c *gin.Context) {
+	// Parse UUID
+	idStr := c.Param("id")
+	parsedID, err := uuid.Parse(idStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid user ID"})
+		return
+	}
+	// Parse the incoming request
+	var req models.UpdateUserRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	hashed, err := service.HashPassword(*req.Password)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to process password"})
+		return
+	}
+	params := gen.UpdatePasswordParams{
+		ID:           pgtype.UUID{Bytes: parsedID, Valid: true},
+		PasswordHash: hashed,
+	}
+	// Save changes
+	err = db.Q.UpdatePassword(c, params)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "there was error changing the password"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "password changed successfully!",
+	})
 }
