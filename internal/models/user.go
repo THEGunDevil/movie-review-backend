@@ -23,7 +23,20 @@ type UpdateUserRequest struct {
 	UserName *string `json:"user_name"`
 	Password *string `json:"password"`
 }
-
+type UserProfileResponse struct {
+    ID             uuid.UUID      `json:"id"`
+    UserName       string         `json:"user_name"`
+    ProfilePicture *string        `json:"profile_picture"` // nullable
+    Bio            string         `json:"bio"`
+    JoinDate       time.Time      `json:"join_date"`
+    ReviewCount    int64          `json:"review_count"`
+    LikeCount      int64          `json:"like_count"`
+    CommentCount   int64          `json:"comment_count"`
+    FollowerCount  int64          `json:"follower_count"`
+    FollowingCount int64          `json:"following_count"`
+    IsFollowing    bool           `json:"is_following"`
+    IsOwnProfile   bool           `json:"is_own_profile"`
+}
 type UserResponse struct {
 	ID       uuid.UUID `json:"id"`
 	UserName string    `json:"user_name"`

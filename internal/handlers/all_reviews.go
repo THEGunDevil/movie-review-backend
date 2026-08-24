@@ -180,17 +180,22 @@ func (rh *ReviewsHandler) GetAllReviews(c *gin.Context) {
 		}
 	}
 	offset := (page - 1) * limit
-
+	mediaType := c.Query("media_type")
+	if mediaType == "" {
+		mediaType = "all"
+	}
 	// Optional: get current user for personalised data (vote, like)
-	var userID uuid.UUID
+	var userID pgtype.UUID
 	if uid, ok := service.UserIDFromContext(c); ok {
-		userID = uid
-	} // else zero UUID → no user-specific data
-
-	rows, err := rh.Queries.GetAllReviewsWithUser(c.Request.Context(), gen.GetAllReviewsWithUserParams{
-		UserID: service.UUIDToPGType(userID),
-		Limit:  int32(limit),
-		Offset: int32(offset),
+		userID = service.UUIDToPGType(uid) // আপনার helper
+	} else {
+		userID = pgtype.UUID{} // NULL
+	}
+	rows, err := rh.Queries.GetAllReviews(c.Request.Context(), gen.GetAllReviewsParams{
+		UserID:    userID,
+		LimitCount:     int32(limit),
+		OffsetCount:    int32(offset),
+		MediaType: mediaType,
 	})
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to fetch reviews"})
@@ -228,8 +233,8 @@ func (rh *ReviewsHandler) GetTopReviewHandler(c *gin.Context) {
 	}
 
 	top, err := rh.Queries.GetTopRatedMediaByPeriod(c.Request.Context(), gen.GetTopRatedMediaByPeriodParams{
-		CreatedAt: pgtype.Timestamptz{Time: start, Valid: true},
-		CreatedAt_2:   pgtype.Timestamptz{Time: end, Valid: true},
+		CreatedAt:   pgtype.Timestamptz{Time: start, Valid: true},
+		CreatedAt_2: pgtype.Timestamptz{Time: end, Valid: true},
 	})
 	if err != nil {
 		if err == pgx.ErrNoRows {

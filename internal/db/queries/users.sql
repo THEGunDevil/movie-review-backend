@@ -65,3 +65,23 @@ LIMIT $1 OFFSET $2;
 
 -- name: CountBannedUsers :one
 SELECT COUNT(*) FROM users WHERE is_banned = TRUE;
+-- name: GetUserProfile :one
+SELECT
+    u.id,
+    u.user_name,
+    u.profile_picture,
+    u.bio,
+    u.created_at AS join_date,
+    (SELECT COUNT(*) FROM reviews r WHERE r.user_id = u.id) AS review_count,
+    (SELECT COUNT(*) FROM review_likes rl
+        JOIN reviews r ON r.id = rl.review_id
+        WHERE r.user_id = u.id) AS like_count,
+    (SELECT COUNT(*) FROM review_comments rc WHERE rc.user_id = u.id) AS comment_count,
+    (SELECT COUNT(*) FROM follows f WHERE f.following_id = u.id) AS follower_count,
+    (SELECT COUNT(*) FROM follows f WHERE f.follower_id = u.id) AS following_count,
+    EXISTS (
+        SELECT 1 FROM follows f
+        WHERE f.follower_id = $2 AND f.following_id = $1
+    ) AS is_following
+FROM users u
+WHERE u.id = $1;

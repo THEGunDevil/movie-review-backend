@@ -22,6 +22,17 @@ func (q *Queries) CountReviewsByMovieID(ctx context.Context, movieID pgtype.Int8
 	return count, err
 }
 
+const countReviewsByUserID = `-- name: CountReviewsByUserID :one
+SELECT COUNT(*) FROM reviews WHERE user_id = $1
+`
+
+func (q *Queries) CountReviewsByUserID(ctx context.Context, userID pgtype.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countReviewsByUserID, userID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const createReview = `-- name: CreateReview :one
 INSERT INTO reviews (user_id, movie_id, rating, content, contains_spoilers)
 VALUES ($1, $2, $3, $4, $5)
@@ -186,53 +197,120 @@ func (q *Queries) GetReviewsByMovieID(ctx context.Context, arg GetReviewsByMovie
 	return items, nil
 }
 
-const getReviewsByUserID = `-- name: GetReviewsByUserID :many
+const listReviewsByUserID = `-- name: ListReviewsByUserID :many
 SELECT
-    r.id, r.movie_id, r.rating, r.content,
-    r.contains_spoilers, r.created_at,
-    m.title AS movie_title, m.poster_path AS movie_poster
+    r.id,
+    r.user_id,
+    u.user_name,
+    u.profile_picture AS user_profile_picture,
+    r.rating,
+    r.content,
+    r.contains_spoilers,
+    r.created_at,
+    r.updated_at,
+    CASE WHEN r.movie_id IS NOT NULL THEN 'movie' ELSE 'tv' END AS media_type,
+    COALESCE(m.title, t.name) AS media_title,
+    COALESCE(m.poster_path, t.poster_path) AS media_poster_path,
+    COALESCE(m.id, t.id) AS media_id,
+    (SELECT COUNT(*) FROM review_likes rl WHERE rl.review_id = r.id) AS like_count,
+    (SELECT COUNT(*) FROM review_comments rc WHERE rc.review_id = r.id) AS comment_count,
+    (SELECT COUNT(*) FROM review_votes rv WHERE rv.review_id = r.id AND rv.vote = 'up') AS upvotes,
+    (SELECT COUNT(*) FROM review_votes rv WHERE rv.review_id = r.id AND rv.vote = 'down') AS downvotes,
+    0 AS view_count,  -- replace with actual view count if you have a column
+    CASE
+        WHEN EXISTS (
+            SELECT 1 FROM review_likes rl
+            WHERE rl.review_id = r.id AND rl.user_id = $2
+        ) THEN TRUE ELSE FALSE
+    END AS user_liked,
+    CASE
+        WHEN EXISTS (
+            SELECT 1 FROM review_votes rv
+            WHERE rv.review_id = r.id AND rv.user_id = $2 AND rv.vote = 'up'
+        ) THEN 'up'
+        WHEN EXISTS (
+            SELECT 1 FROM review_votes rv
+            WHERE rv.review_id = r.id AND rv.user_id = $2 AND rv.vote = 'down'
+        ) THEN 'down'
+        ELSE NULL
+    END AS user_vote,
+    FALSE AS user_saved  -- or implement saved logic if needed
 FROM reviews r
-JOIN movies m ON m.id = r.movie_id
+JOIN users u ON r.user_id = u.id
+LEFT JOIN movies m ON r.movie_id = m.id
+LEFT JOIN tv_shows t ON r.tv_id = t.id
 WHERE r.user_id = $1
 ORDER BY r.created_at DESC
-LIMIT $2 OFFSET $3
+LIMIT $3 OFFSET $4
 `
 
-type GetReviewsByUserIDParams struct {
-	UserID pgtype.UUID `json:"user_id"`
-	Limit  int32       `json:"limit"`
-	Offset int32       `json:"offset"`
+type ListReviewsByUserIDParams struct {
+	UserID   pgtype.UUID `json:"user_id"`
+	UserID_2 pgtype.UUID `json:"user_id_2"`
+	Limit    int32       `json:"limit"`
+	Offset   int32       `json:"offset"`
 }
 
-type GetReviewsByUserIDRow struct {
-	ID               pgtype.UUID        `json:"id"`
-	MovieID          pgtype.Int8        `json:"movie_id"`
-	Rating           pgtype.Numeric     `json:"rating"`
-	Content          pgtype.Text        `json:"content"`
-	ContainsSpoilers pgtype.Bool        `json:"contains_spoilers"`
-	CreatedAt        pgtype.Timestamptz `json:"created_at"`
-	MovieTitle       string             `json:"movie_title"`
-	MoviePoster      pgtype.Text        `json:"movie_poster"`
+type ListReviewsByUserIDRow struct {
+	ID                 pgtype.UUID        `json:"id"`
+	UserID             pgtype.UUID        `json:"user_id"`
+	UserName           string             `json:"user_name"`
+	UserProfilePicture pgtype.Text        `json:"user_profile_picture"`
+	Rating             pgtype.Numeric     `json:"rating"`
+	Content            pgtype.Text        `json:"content"`
+	ContainsSpoilers   pgtype.Bool        `json:"contains_spoilers"`
+	CreatedAt          pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
+	MediaType          string             `json:"media_type"`
+	MediaTitle         string             `json:"media_title"`
+	MediaPosterPath    pgtype.Text        `json:"media_poster_path"`
+	MediaID            int64              `json:"media_id"`
+	LikeCount          int64              `json:"like_count"`
+	CommentCount       int64              `json:"comment_count"`
+	Upvotes            int64              `json:"upvotes"`
+	Downvotes          int64              `json:"downvotes"`
+	ViewCount          int32              `json:"view_count"`
+	UserLiked          bool               `json:"user_liked"`
+	UserVote           interface{}        `json:"user_vote"`
+	UserSaved          bool               `json:"user_saved"`
 }
 
-func (q *Queries) GetReviewsByUserID(ctx context.Context, arg GetReviewsByUserIDParams) ([]GetReviewsByUserIDRow, error) {
-	rows, err := q.db.Query(ctx, getReviewsByUserID, arg.UserID, arg.Limit, arg.Offset)
+func (q *Queries) ListReviewsByUserID(ctx context.Context, arg ListReviewsByUserIDParams) ([]ListReviewsByUserIDRow, error) {
+	rows, err := q.db.Query(ctx, listReviewsByUserID,
+		arg.UserID,
+		arg.UserID_2,
+		arg.Limit,
+		arg.Offset,
+	)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []GetReviewsByUserIDRow
+	var items []ListReviewsByUserIDRow
 	for rows.Next() {
-		var i GetReviewsByUserIDRow
+		var i ListReviewsByUserIDRow
 		if err := rows.Scan(
 			&i.ID,
-			&i.MovieID,
+			&i.UserID,
+			&i.UserName,
+			&i.UserProfilePicture,
 			&i.Rating,
 			&i.Content,
 			&i.ContainsSpoilers,
 			&i.CreatedAt,
-			&i.MovieTitle,
-			&i.MoviePoster,
+			&i.UpdatedAt,
+			&i.MediaType,
+			&i.MediaTitle,
+			&i.MediaPosterPath,
+			&i.MediaID,
+			&i.LikeCount,
+			&i.CommentCount,
+			&i.Upvotes,
+			&i.Downvotes,
+			&i.ViewCount,
+			&i.UserLiked,
+			&i.UserVote,
+			&i.UserSaved,
 		); err != nil {
 			return nil, err
 		}

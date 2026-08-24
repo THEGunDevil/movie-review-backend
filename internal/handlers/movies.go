@@ -471,6 +471,15 @@ func (h *MoviesHandler) DeleteMovie(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{"message": "movie deleted"})
 }
+func (h *MoviesHandler) GetTopMovies(c *gin.Context) {
+	rows,err := h.Queries.ListTopMovies(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to top 3 movie"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"results": rows})
+}
 func (h *MoviesHandler) AllGenres(c *gin.Context) {
 
 	genre, err := h.Queries.ListGenres(c.Request.Context())

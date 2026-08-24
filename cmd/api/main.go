@@ -62,7 +62,8 @@ func main() {
 	AllReviewsHandler := &handlers.ReviewsHandler{Queries: store.Queries}
 	WebhookHandler := &handlers.WebhookHandler{Queries: store.Queries}
 	NotificationsHandler := &handlers.NotificationsHandler{Queries: store.Queries}
-	registerRoutes(r, store, moviesHandler, TVShowHandler, AllReviewsHandler, WebhookHandler, NotificationsHandler)
+	WatchlistHandler := &handlers.WatchlistHandler{Queries: store.Queries}
+	registerRoutes(r, store, moviesHandler, TVShowHandler, AllReviewsHandler, WebhookHandler, NotificationsHandler, WatchlistHandler)
 	// ── Server ───────────────────────────────────────
 	port := os.Getenv("PORT")
 	if port == "" {
@@ -99,13 +100,12 @@ func main() {
 	log.Println("✅ Server stopped cleanly")
 }
 
-func registerRoutes(r *gin.Engine, store *db.Store, h *handlers.MoviesHandler, t *handlers.TVShowsHandler, rh *handlers.ReviewsHandler, w *handlers.WebhookHandler, n *handlers.NotificationsHandler) {
+func registerRoutes(r *gin.Engine, store *db.Store, h *handlers.MoviesHandler, t *handlers.TVShowsHandler, rh *handlers.ReviewsHandler, w *handlers.WebhookHandler, n *handlers.NotificationsHandler, wl *handlers.WatchlistHandler) {
 	log.Println("✅ Registering routes...")
 
 	r.GET("/health", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
 	})
-	r.GET("/reviews", rh.GetAllReviews)
 	r.GET("/reviews/:id/comments", rh.GetComments)
 
 	webhookSecret := os.Getenv("WEBHOOK_SECRET")
@@ -131,6 +131,7 @@ func registerRoutes(r *gin.Engine, store *db.Store, h *handlers.MoviesHandler, t
 	users.Use(middleware.AuthMiddleware(), middleware.RateLimiter())
 	{
 		users.GET("/user/:id", handlers.GetUserByIDHandler)
+		users.GET("/user_profile/:id", handlers.GetUserProfileByID)
 		users.PATCH("/user/:id", handlers.UpdateUserByIDHandler)
 	}
 	movies := r.Group("/movies")
@@ -138,6 +139,7 @@ func registerRoutes(r *gin.Engine, store *db.Store, h *handlers.MoviesHandler, t
 		movies.GET("", h.GetMoviesPaginated)                          // GET /movies?page=1&limit=20
 		movies.GET("/search", h.SearchMovies)                         // GET /movies/search?q=batman
 		movies.GET("/genre/:genre_id", h.ListMoviesByGenre)           // GET /movies/genre/28
+		movies.GET("/top_movies", h.GetTopMovies)                     // GET /movies/genre/28
 		movies.GET("/genre", h.AllGenres)                             // GET /movies/genre/28
 		movies.GET("/batch", h.GetMoviesByIDs)                        // GET /movies/batch?ids=1,2,3
 		movies.GET("/movie/:id", h.GetMovieByID)                      // GET /movies/550
@@ -151,7 +153,9 @@ func registerRoutes(r *gin.Engine, store *db.Store, h *handlers.MoviesHandler, t
 	reviews := r.Group("/reviews")
 	reviews.Use(middleware.AuthMiddleware())
 	{
+		reviews.GET("", rh.GetAllReviews)
 		reviews.GET("/:id", h.GetReviewByID)
+		reviews.GET("/:id/user", h.GetReviewsByUserID)
 		reviews.PATCH("/:id", h.UpdateReview)
 		reviews.DELETE("/:id", h.DeleteReview)
 		reviews.POST("/:id/vote", rh.VoteOnReview)
@@ -174,6 +178,12 @@ func registerRoutes(r *gin.Engine, store *db.Store, h *handlers.MoviesHandler, t
 		tv.GET("/tv_show/:id/reviews", h.GetTVReviewsByShow)                           // public
 		tv.POST("/tv_show/:id/reviews", middleware.AuthMiddleware(), t.CreateTVReview) // authenticated
 	}
+
+	watchlist := r.Group("/watchlist")
+	{
+		watchlist.GET("/:id", wl.GetWatchlistByUserID)
+	}
+
 	// // Admin
 	// adminGroup := r.Group("/admin")
 	// adminGroup.Use(middleware.AuthMiddleware(), middleware.AdminOnly())

@@ -170,26 +170,26 @@ func (h *MoviesHandler) UpdateReview(c *gin.Context) {
 		spoilers = *req.ContainsSpoilers
 	}
 
-err = h.Queries.UpdateReview(c.Request.Context(), gen.UpdateReviewParams{
-    ID:               reviewID,
-    Rating:           rating,
-    Content:          content,
-    ContainsSpoilers: pgtype.Bool{Bool: spoilers, Valid: true},
-    UserID:           service.UUIDToPGType(userID),
-})
-if err != nil {
-    c.JSON(http.StatusInternalServerError, gin.H{"error": "update failed"})
-    return
-}
+	err = h.Queries.UpdateReview(c.Request.Context(), gen.UpdateReviewParams{
+		ID:               reviewID,
+		Rating:           rating,
+		Content:          content,
+		ContainsSpoilers: pgtype.Bool{Bool: spoilers, Valid: true},
+		UserID:           service.UUIDToPGType(userID),
+	})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "update failed"})
+		return
+	}
 
-// Fetch the updated review to return complete data
-updatedReview, err := h.Queries.GetReviewByID(c.Request.Context(), reviewID)
-if err != nil {
-    c.JSON(http.StatusInternalServerError, gin.H{"error": "review updated but could not fetch"})
-    return
-}
+	// Fetch the updated review to return complete data
+	updatedReview, err := h.Queries.GetReviewByID(c.Request.Context(), reviewID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "review updated but could not fetch"})
+		return
+	}
 
-c.JSON(http.StatusOK, updatedReview)
+	c.JSON(http.StatusOK, updatedReview)
 }
 
 // ──── Delete Review (only owner) ───────────────────────────────
@@ -248,4 +248,68 @@ func (h *MoviesHandler) GetReviewByID(c *gin.Context) {
 		Error(err, "review")
 	}
 	c.JSON(http.StatusOK, review)
+}
+func (h *MoviesHandler) GetReviewsByUserID(c *gin.Context) {
+    // Parse target user ID (UUID)
+    userID, err := uuid.Parse(c.Param("id"))
+    if err != nil {
+        c.JSON(http.StatusBadRequest, gin.H{"error": "invalid user id"})
+        return
+    }
+
+    // Parse pagination
+    page := 1
+    limit := 20
+    if p := c.Query("page"); p != "" {
+        if parsed, err := strconv.Atoi(p); err == nil && parsed > 0 {
+            page = parsed
+        }
+    }
+    if l := c.Query("limit"); l != "" {
+        if parsed, err := strconv.Atoi(l); err == nil && parsed > 0 {
+            limit = parsed
+        }
+    }
+    offset := (page - 1) * limit
+
+    // Get current logged-in user ID from context (set by your auth middleware)
+    currentUserID, _ := c.Get("user_id")
+    var currentUUID uuid.UUID
+    if currentUserID != nil {
+        currentUUID = currentUserID.(uuid.UUID)
+    } else {
+        currentUUID = uuid.Nil // or use pgtype.UUID{Valid:false} for NULL
+    }
+
+    ctx := c.Request.Context()
+
+    // Total count
+    total, err := h.Queries.CountReviewsByUserID(ctx, service.UUIDToPGType(userID))
+    if err != nil {
+        total = 0
+    }
+    totalPages := int(math.Ceil(float64(total) / float64(limit)))
+    if totalPages == 0 {
+        totalPages = 1
+    }
+
+    // Fetch reviews with full details
+    reviews, err := h.Queries.ListReviewsByUserID(ctx, gen.ListReviewsByUserIDParams{
+        UserID:        service.UUIDToPGType(userID),
+        UserID_2: service.UUIDToPGType(currentUUID),
+        Limit:         int32(limit),
+        Offset:        int32(offset),
+    })
+    if err != nil {
+        c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to fetch reviews"})
+        return
+    }
+
+    c.JSON(http.StatusOK, gin.H{
+        "reviews":     reviews,
+        "total":       total,
+        "page":        page,
+        "limit":       limit,
+        "total_pages": totalPages,
+    })
 }

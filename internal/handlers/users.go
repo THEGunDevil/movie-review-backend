@@ -107,6 +107,52 @@ func GetUserByIDHandler(c *gin.Context) {
 	log.Printf("👤 Returning user data for user %v (banned: %v)", user.ID, user.IsBanned)
 	c.JSON(http.StatusOK, userRes)
 }
+func GetUserProfileByID(c *gin.Context) {
+    targetID, err := service.ParseUUIDParam(c, "id")
+    if err != nil {
+        c.JSON(http.StatusBadRequest, gin.H{"error": "invalid user id"})
+        return
+    }
+
+    // Current user ID from JWT (or nil)
+    currentUserID, exists := c.Get("user_id")
+    var currentPgUUID pgtype.UUID
+    if exists {
+        uid, ok := currentUserID.(uuid.UUID)
+        if ok {
+            currentPgUUID = service.UUIDToPGType(uid)
+        }
+    } else {
+        currentPgUUID = pgtype.UUID{} // zero value → NULL
+    }
+
+    user, err := db.Q.GetUserProfile(c.Request.Context(), gen.GetUserProfileParams{
+        FollowingID:  service.UUIDToPGType(targetID),
+        FollowerID: service.UUIDToPGType(currentPgUUID.Bytes),
+    })
+    if err != nil {
+        c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
+        return
+    }
+
+    // Convert to response struct – include stats
+    userRes := models.UserProfileResponse{
+        ID:              user.ID.Bytes,
+        UserName:        user.UserName,
+        ProfilePicture:  &user.ProfilePicture.String,
+        Bio:             user.Bio,
+        JoinDate:        user.JoinDate.Time,
+        ReviewCount:     user.ReviewCount,
+        LikeCount:       user.LikeCount,
+        CommentCount:    user.CommentCount,
+        FollowerCount:   user.FollowerCount,
+        FollowingCount:  user.FollowingCount,
+        IsFollowing:     user.IsFollowing,
+        IsOwnProfile:    exists && currentUserID.(uuid.UUID) == targetID, // or compare in SQL?
+    }
+
+    c.JSON(http.StatusOK, userRes)
+}
 
 // UpdateUserByIDHandler updates user by ID
 func UpdateUserByIDHandler(c *gin.Context) {

@@ -43,7 +43,10 @@ SELECT * FROM movies WHERE id = $1;
 SELECT * FROM movies
 ORDER BY popularity DESC
 LIMIT $1 OFFSET $2;
-
+-- name: ListTopMovies :many
+SELECT * FROM movies
+ORDER BY popularity DESC
+LIMIT 3;
 -- name: ListMoviesByGenre :many
 SELECT * FROM movies
 WHERE genre_ids @> $1::integer[]

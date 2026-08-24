@@ -8,6 +8,12 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+type Follow struct {
+	FollowerID  pgtype.UUID        `json:"follower_id"`
+	FollowingID pgtype.UUID        `json:"following_id"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+}
+
 type Genre struct {
 	ID        int32              `json:"id"`
 	Name      string             `json:"name"`
@@ -234,6 +240,7 @@ type TvVideo struct {
 type User struct {
 	ID             pgtype.UUID        `json:"id"`
 	UserName       string             `json:"user_name"`
+	Bio            string             `json:"bio"`
 	Email          string             `json:"email"`
 	PasswordHash   string             `json:"password_hash"`
 	ProfilePicture pgtype.Text        `json:"profile_picture"`

@@ -317,6 +317,57 @@ func (q *Queries) ListMoviesByGenre(ctx context.Context, arg ListMoviesByGenrePa
 	return items, nil
 }
 
+const listTopMovies = `-- name: ListTopMovies :many
+SELECT id, title, original_language, original_title, overview, release_date, popularity, vote_average, vote_count, poster_path, backdrop_path, adult, genre_ids, softcore, video, runtime, budget, revenue, homepage, imdb_id, status, tagline, created_at, updated_at FROM movies
+ORDER BY popularity DESC
+LIMIT 3
+`
+
+func (q *Queries) ListTopMovies(ctx context.Context) ([]Movie, error) {
+	rows, err := q.db.Query(ctx, listTopMovies)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Movie
+	for rows.Next() {
+		var i Movie
+		if err := rows.Scan(
+			&i.ID,
+			&i.Title,
+			&i.OriginalLanguage,
+			&i.OriginalTitle,
+			&i.Overview,
+			&i.ReleaseDate,
+			&i.Popularity,
+			&i.VoteAverage,
+			&i.VoteCount,
+			&i.PosterPath,
+			&i.BackdropPath,
+			&i.Adult,
+			&i.GenreIds,
+			&i.Softcore,
+			&i.Video,
+			&i.Runtime,
+			&i.Budget,
+			&i.Revenue,
+			&i.Homepage,
+			&i.ImdbID,
+			&i.Status,
+			&i.Tagline,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const searchMovies = `-- name: SearchMovies :many
 SELECT id, title, original_language, original_title, overview, release_date, popularity, vote_average, vote_count, poster_path, backdrop_path, adult, genre_ids, softcore, video, runtime, budget, revenue, homepage, imdb_id, status, tagline, created_at, updated_at FROM movies
 WHERE title ILIKE '%' || $1 || '%'

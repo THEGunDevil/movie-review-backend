@@ -1,4 +1,4 @@
--- name: GetAllReviewsWithUser :many
+-- name: GetAllReviews :many
 SELECT
     r.id,
     r.rating,
@@ -11,7 +11,10 @@ SELECT
     u.profile_picture AS user_profile_picture,
     COALESCE(m.id, t.id) AS media_id,
     COALESCE(m.title, t.name) AS media_title,
-    CASE WHEN r.movie_id IS NOT NULL THEN 'movie' ELSE 'tv' END AS media_type,
+    CASE
+        WHEN r.movie_id IS NOT NULL THEN 'movie'
+        ELSE 'tv'
+    END AS media_type,
     COALESCE(m.poster_path, t.poster_path) AS media_poster_path,
     COALESCE(v.upvotes, 0) AS upvotes,
     COALESCE(v.downvotes, 0) AS downvotes,
@@ -25,22 +28,50 @@ FROM reviews r
 JOIN users u ON u.id = r.user_id
 LEFT JOIN movies m ON m.id = r.movie_id
 LEFT JOIN tv_shows t ON t.id = r.tv_id
+
 LEFT JOIN LATERAL (
     SELECT
         COUNT(*) FILTER (WHERE vote = 'up') AS upvotes,
         COUNT(*) FILTER (WHERE vote = 'down') AS downvotes
-    FROM review_votes WHERE review_id = r.id
+    FROM review_votes
+    WHERE review_id = r.id
 ) v ON TRUE
+
 LEFT JOIN LATERAL (
-    SELECT COUNT(*) AS cnt FROM review_comments WHERE review_id = r.id
+    SELECT COUNT(*) AS cnt
+    FROM review_comments
+    WHERE review_id = r.id
 ) c ON TRUE
+
 LEFT JOIN LATERAL (
-    SELECT COUNT(*) AS cnt FROM review_likes WHERE review_id = r.id
+    SELECT COUNT(*) AS cnt
+    FROM review_likes
+    WHERE review_id = r.id
 ) l ON TRUE
-LEFT JOIN review_votes rv ON rv.review_id = r.id AND rv.user_id = $1
-LEFT JOIN review_likes rl ON rl.review_id = r.id AND rl.user_id = $1
+
+LEFT JOIN review_votes rv
+    ON rv.review_id = r.id
+    AND rv.user_id = sqlc.arg(user_id)
+
+LEFT JOIN review_likes rl
+    ON rl.review_id = r.id
+    AND rl.user_id = sqlc.arg(user_id)
+
+WHERE (
+    sqlc.arg(media_type)::text = 'all'
+    OR (
+        r.movie_id IS NOT NULL
+        AND sqlc.arg(media_type)::text = 'movie'
+    )
+    OR (
+        r.tv_id IS NOT NULL
+        AND sqlc.arg(media_type)::text = 'tv'
+    )
+)
+
 ORDER BY r.created_at DESC
-LIMIT $2 OFFSET $3;
+LIMIT sqlc.arg(limit_count)
+OFFSET sqlc.arg(offset_count);
 
 -- name: CountAllReviews :one
 SELECT COUNT(*) FROM reviews;

@@ -162,38 +162,54 @@ func (h *TVShowsHandler) GetTVShowByID(c *gin.Context) {
 
 // GetTVPersonByCreditID is placeholder – you'd join through tv_credits.
 func (h *TVShowsHandler) GetTVPersonByCreditID(c *gin.Context) {
-    idStr := c.Param("id")
-    creditID, err := strconv.Atoi(idStr)
-    if err != nil {
-        c.JSON(http.StatusBadRequest, gin.H{"error": "invalid credit id"})
-        return
-    }
+	idStr := c.Param("id")
+	creditID, err := strconv.Atoi(idStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid credit id"})
+		return
+	}
 
-    person, err := h.Queries.GetPersonByTVCreditID(c.Request.Context(), int64(creditID))
-    if err != nil {
-        if errors.Is(err, pgx.ErrNoRows) {
-            c.JSON(http.StatusNotFound, gin.H{"error": "person not found"})
-            return
-        }
-        c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to fetch person"})
-        return
-    }
+	person, err := h.Queries.GetPersonByTVCreditID(c.Request.Context(), int64(creditID))
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "person not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to fetch person"})
+		return
+	}
 
-    c.JSON(http.StatusOK, gin.H{"person": models.ToPersonResponse(person)})
+	c.JSON(http.StatusOK, gin.H{"person": models.ToPersonResponse(person)})
 }
+
 // GetTVCreditsByShowID returns paginated credits for a TV show.
 func (h *TVShowsHandler) GetTVCreditsByShowID(c *gin.Context) {
 	idStr := c.Param("id")
 	showID, err := strconv.Atoi(idStr)
 	if err != nil { /* 400 */
 	}
+	page := 1
+	limit := 50
 
-	page, limit := 1, 50
-	// parse page/limit
-	query := c.Query("type")
-	if query == "" { /* 400 */
+	if p := c.Query("page"); p != "" {
+		if parsed, err := strconv.Atoi(p); err == nil && parsed > 0 {
+			page = parsed
+		}
 	}
+	if l := c.Query("limit"); l != "" {
+		if parsed, err := strconv.Atoi(l); err == nil && parsed > 0 {
+			limit = parsed
+		}
+	}
+
 	offset := (page - 1) * limit
+
+	// 1️⃣ মোট মুভির সংখ্যা বের করো
+	query := c.Query("type")
+	if query == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "search query is required"})
+		return
+	}
 
 	total, _ := h.Queries.CountTVCreditsByType(c.Request.Context(), gen.CountTVCreditsByTypeParams{
 		TvID: int64(showID),
@@ -210,9 +226,7 @@ func (h *TVShowsHandler) GetTVCreditsByShowID(c *gin.Context) {
 		Limit:  int32(limit),
 		Offset: int32(offset),
 	})
-	if err != nil { /* handle */
-	}
-
+	Error(err, "credits")
 	c.JSON(http.StatusOK, gin.H{
 		"page":        page,
 		"limit":       limit,

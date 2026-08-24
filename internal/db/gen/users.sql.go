@@ -76,7 +76,7 @@ func (q *Queries) CountUsersByEmail(ctx context.Context, dollar_1 interface{}) (
 const createUser = `-- name: CreateUser :one
 INSERT INTO users (user_name, email, password_hash)
 VALUES ($1, $2, $3)
-RETURNING id, user_name, email, password_hash, profile_picture, role, is_banned, ban_reason, ban_until, is_permanent_ban, token_version, created_at, updated_at
+RETURNING id, user_name, bio, email, password_hash, profile_picture, role, is_banned, ban_reason, ban_until, is_permanent_ban, token_version, created_at, updated_at
 `
 
 type CreateUserParams struct {
@@ -91,6 +91,7 @@ func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (User, e
 	err := row.Scan(
 		&i.ID,
 		&i.UserName,
+		&i.Bio,
 		&i.Email,
 		&i.PasswordHash,
 		&i.ProfilePicture,
@@ -107,7 +108,7 @@ func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (User, e
 }
 
 const getUserByEmail = `-- name: GetUserByEmail :one
-SELECT id, user_name, email, password_hash, profile_picture, role, is_banned, ban_reason, ban_until, is_permanent_ban, token_version, created_at, updated_at FROM users WHERE email = $1
+SELECT id, user_name, bio, email, password_hash, profile_picture, role, is_banned, ban_reason, ban_until, is_permanent_ban, token_version, created_at, updated_at FROM users WHERE email = $1
 `
 
 func (q *Queries) GetUserByEmail(ctx context.Context, email string) (User, error) {
@@ -116,6 +117,7 @@ func (q *Queries) GetUserByEmail(ctx context.Context, email string) (User, error
 	err := row.Scan(
 		&i.ID,
 		&i.UserName,
+		&i.Bio,
 		&i.Email,
 		&i.PasswordHash,
 		&i.ProfilePicture,
@@ -132,7 +134,7 @@ func (q *Queries) GetUserByEmail(ctx context.Context, email string) (User, error
 }
 
 const getUserByID = `-- name: GetUserByID :one
-SELECT id, user_name, email, password_hash, profile_picture, role, is_banned, ban_reason, ban_until, is_permanent_ban, token_version, created_at, updated_at FROM users WHERE id = $1
+SELECT id, user_name, bio, email, password_hash, profile_picture, role, is_banned, ban_reason, ban_until, is_permanent_ban, token_version, created_at, updated_at FROM users WHERE id = $1
 `
 
 func (q *Queries) GetUserByID(ctx context.Context, id pgtype.UUID) (User, error) {
@@ -141,6 +143,7 @@ func (q *Queries) GetUserByID(ctx context.Context, id pgtype.UUID) (User, error)
 	err := row.Scan(
 		&i.ID,
 		&i.UserName,
+		&i.Bio,
 		&i.Email,
 		&i.PasswordHash,
 		&i.ProfilePicture,
@@ -165,6 +168,66 @@ func (q *Queries) GetUserNameByID(ctx context.Context, id pgtype.UUID) (string, 
 	var user_name string
 	err := row.Scan(&user_name)
 	return user_name, err
+}
+
+const getUserProfile = `-- name: GetUserProfile :one
+SELECT
+    u.id,
+    u.user_name,
+    u.profile_picture,
+    u.bio,
+    u.created_at AS join_date,
+    (SELECT COUNT(*) FROM reviews r WHERE r.user_id = u.id) AS review_count,
+    (SELECT COUNT(*) FROM review_likes rl
+        JOIN reviews r ON r.id = rl.review_id
+        WHERE r.user_id = u.id) AS like_count,
+    (SELECT COUNT(*) FROM review_comments rc WHERE rc.user_id = u.id) AS comment_count,
+    (SELECT COUNT(*) FROM follows f WHERE f.following_id = u.id) AS follower_count,
+    (SELECT COUNT(*) FROM follows f WHERE f.follower_id = u.id) AS following_count,
+    EXISTS (
+        SELECT 1 FROM follows f
+        WHERE f.follower_id = $2 AND f.following_id = $1
+    ) AS is_following
+FROM users u
+WHERE u.id = $1
+`
+
+type GetUserProfileParams struct {
+	FollowingID pgtype.UUID `json:"following_id"`
+	FollowerID  pgtype.UUID `json:"follower_id"`
+}
+
+type GetUserProfileRow struct {
+	ID             pgtype.UUID        `json:"id"`
+	UserName       string             `json:"user_name"`
+	ProfilePicture pgtype.Text        `json:"profile_picture"`
+	Bio            string             `json:"bio"`
+	JoinDate       pgtype.Timestamptz `json:"join_date"`
+	ReviewCount    int64              `json:"review_count"`
+	LikeCount      int64              `json:"like_count"`
+	CommentCount   int64              `json:"comment_count"`
+	FollowerCount  int64              `json:"follower_count"`
+	FollowingCount int64              `json:"following_count"`
+	IsFollowing    bool               `json:"is_following"`
+}
+
+func (q *Queries) GetUserProfile(ctx context.Context, arg GetUserProfileParams) (GetUserProfileRow, error) {
+	row := q.db.QueryRow(ctx, getUserProfile, arg.FollowingID, arg.FollowerID)
+	var i GetUserProfileRow
+	err := row.Scan(
+		&i.ID,
+		&i.UserName,
+		&i.ProfilePicture,
+		&i.Bio,
+		&i.JoinDate,
+		&i.ReviewCount,
+		&i.LikeCount,
+		&i.CommentCount,
+		&i.FollowerCount,
+		&i.FollowingCount,
+		&i.IsFollowing,
+	)
+	return i, err
 }
 
 const incrementTokenVersion = `-- name: IncrementTokenVersion :exec
@@ -235,7 +298,7 @@ func (q *Queries) ListBannedUsersPaginated(ctx context.Context, arg ListBannedUs
 }
 
 const listUsers = `-- name: ListUsers :many
-SELECT id, user_name, email, password_hash, profile_picture, role, is_banned, ban_reason, ban_until, is_permanent_ban, token_version, created_at, updated_at FROM users ORDER BY created_at DESC LIMIT $1 OFFSET $2
+SELECT id, user_name, bio, email, password_hash, profile_picture, role, is_banned, ban_reason, ban_until, is_permanent_ban, token_version, created_at, updated_at FROM users ORDER BY created_at DESC LIMIT $1 OFFSET $2
 `
 
 type ListUsersParams struct {
@@ -255,6 +318,7 @@ func (q *Queries) ListUsers(ctx context.Context, arg ListUsersParams) ([]User, e
 		if err := rows.Scan(
 			&i.ID,
 			&i.UserName,
+			&i.Bio,
 			&i.Email,
 			&i.PasswordHash,
 			&i.ProfilePicture,
@@ -278,7 +342,7 @@ func (q *Queries) ListUsers(ctx context.Context, arg ListUsersParams) ([]User, e
 }
 
 const listUsersPaginated = `-- name: ListUsersPaginated :many
-SELECT id, user_name, email, password_hash, profile_picture, role, is_banned, ban_reason, ban_until, is_permanent_ban, token_version, created_at, updated_at FROM users
+SELECT id, user_name, bio, email, password_hash, profile_picture, role, is_banned, ban_reason, ban_until, is_permanent_ban, token_version, created_at, updated_at FROM users
 ORDER BY created_at DESC
 LIMIT $1 OFFSET $2
 `
@@ -300,6 +364,7 @@ func (q *Queries) ListUsersPaginated(ctx context.Context, arg ListUsersPaginated
 		if err := rows.Scan(
 			&i.ID,
 			&i.UserName,
+			&i.Bio,
 			&i.Email,
 			&i.PasswordHash,
 			&i.ProfilePicture,
@@ -352,7 +417,7 @@ const updateUserProfile = `-- name: UpdateUserProfile :one
 UPDATE users
 SET user_name = $2, updated_at = NOW()
 WHERE id = $1
-RETURNING id, user_name, email, password_hash, profile_picture, role, is_banned, ban_reason, ban_until, is_permanent_ban, token_version, created_at, updated_at
+RETURNING id, user_name, bio, email, password_hash, profile_picture, role, is_banned, ban_reason, ban_until, is_permanent_ban, token_version, created_at, updated_at
 `
 
 type UpdateUserProfileParams struct {
@@ -366,6 +431,7 @@ func (q *Queries) UpdateUserProfile(ctx context.Context, arg UpdateUserProfilePa
 	err := row.Scan(
 		&i.ID,
 		&i.UserName,
+		&i.Bio,
 		&i.Email,
 		&i.PasswordHash,
 		&i.ProfilePicture,

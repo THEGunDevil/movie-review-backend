@@ -22,7 +22,7 @@ func (q *Queries) CountAllReviews(ctx context.Context) (int64, error) {
 	return count, err
 }
 
-const getAllReviewsWithUser = `-- name: GetAllReviewsWithUser :many
+const getAllReviews = `-- name: GetAllReviews :many
 SELECT
     r.id,
     r.rating,
@@ -35,7 +35,10 @@ SELECT
     u.profile_picture AS user_profile_picture,
     COALESCE(m.id, t.id) AS media_id,
     COALESCE(m.title, t.name) AS media_title,
-    CASE WHEN r.movie_id IS NOT NULL THEN 'movie' ELSE 'tv' END AS media_type,
+    CASE
+        WHEN r.movie_id IS NOT NULL THEN 'movie'
+        ELSE 'tv'
+    END AS media_type,
     COALESCE(m.poster_path, t.poster_path) AS media_poster_path,
     COALESCE(v.upvotes, 0) AS upvotes,
     COALESCE(v.downvotes, 0) AS downvotes,
@@ -49,31 +52,60 @@ FROM reviews r
 JOIN users u ON u.id = r.user_id
 LEFT JOIN movies m ON m.id = r.movie_id
 LEFT JOIN tv_shows t ON t.id = r.tv_id
+
 LEFT JOIN LATERAL (
     SELECT
         COUNT(*) FILTER (WHERE vote = 'up') AS upvotes,
         COUNT(*) FILTER (WHERE vote = 'down') AS downvotes
-    FROM review_votes WHERE review_id = r.id
+    FROM review_votes
+    WHERE review_id = r.id
 ) v ON TRUE
+
 LEFT JOIN LATERAL (
-    SELECT COUNT(*) AS cnt FROM review_comments WHERE review_id = r.id
+    SELECT COUNT(*) AS cnt
+    FROM review_comments
+    WHERE review_id = r.id
 ) c ON TRUE
+
 LEFT JOIN LATERAL (
-    SELECT COUNT(*) AS cnt FROM review_likes WHERE review_id = r.id
+    SELECT COUNT(*) AS cnt
+    FROM review_likes
+    WHERE review_id = r.id
 ) l ON TRUE
-LEFT JOIN review_votes rv ON rv.review_id = r.id AND rv.user_id = $1
-LEFT JOIN review_likes rl ON rl.review_id = r.id AND rl.user_id = $1
+
+LEFT JOIN review_votes rv
+    ON rv.review_id = r.id
+    AND rv.user_id = $1
+
+LEFT JOIN review_likes rl
+    ON rl.review_id = r.id
+    AND rl.user_id = $1
+
+WHERE (
+    $2::text = 'all'
+    OR (
+        r.movie_id IS NOT NULL
+        AND $2::text = 'movie'
+    )
+    OR (
+        r.tv_id IS NOT NULL
+        AND $2::text = 'tv'
+    )
+)
+
 ORDER BY r.created_at DESC
-LIMIT $2 OFFSET $3
+LIMIT $4
+OFFSET $3
 `
 
-type GetAllReviewsWithUserParams struct {
-	UserID pgtype.UUID `json:"user_id"`
-	Limit  int32       `json:"limit"`
-	Offset int32       `json:"offset"`
+type GetAllReviewsParams struct {
+	UserID      pgtype.UUID `json:"user_id"`
+	MediaType   string      `json:"media_type"`
+	OffsetCount int32       `json:"offset_count"`
+	LimitCount  int32       `json:"limit_count"`
 }
 
-type GetAllReviewsWithUserRow struct {
+type GetAllReviewsRow struct {
 	ID                 pgtype.UUID        `json:"id"`
 	Rating             pgtype.Numeric     `json:"rating"`
 	Content            pgtype.Text        `json:"content"`
@@ -97,15 +129,20 @@ type GetAllReviewsWithUserRow struct {
 	UserSaved          bool               `json:"user_saved"`
 }
 
-func (q *Queries) GetAllReviewsWithUser(ctx context.Context, arg GetAllReviewsWithUserParams) ([]GetAllReviewsWithUserRow, error) {
-	rows, err := q.db.Query(ctx, getAllReviewsWithUser, arg.UserID, arg.Limit, arg.Offset)
+func (q *Queries) GetAllReviews(ctx context.Context, arg GetAllReviewsParams) ([]GetAllReviewsRow, error) {
+	rows, err := q.db.Query(ctx, getAllReviews,
+		arg.UserID,
+		arg.MediaType,
+		arg.OffsetCount,
+		arg.LimitCount,
+	)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []GetAllReviewsWithUserRow
+	var items []GetAllReviewsRow
 	for rows.Next() {
-		var i GetAllReviewsWithUserRow
+		var i GetAllReviewsRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.Rating,
