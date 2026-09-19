@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"log"
 	"sync"
 
 	"github.com/google/uuid"
@@ -71,28 +72,37 @@ func (h *NotificationHub) RemoveClient(
 }
 
 func (h *NotificationHub) Publish(
-	userID uuid.UUID,
-	event NotificationEvent,
+    userID uuid.UUID,
+    event NotificationEvent,
 ) {
-	data, err := json.Marshal(event)
-	if err != nil {
-		return
-	}
+    data, err := json.Marshal(event)
+    if err != nil {
+        log.Printf("❌ Failed to marshal notification: %v", err)
+        return
+    }
 
-	h.mu.RLock()
-	defer h.mu.RUnlock()
+    h.mu.RLock()
+    defer h.mu.RUnlock()
 
-	userClients, exists := h.clients[userID]
+    userClients, exists := h.clients[userID]
 
-	if !exists {
-		return
-	}
+    if !exists {
+        log.Printf("⚠️ No SSE client connected for user %s", userID)
+        return
+    }
 
-	for client := range userClients {
-		select {
-		case client <- data:
-		default:
-			// Slow client হলে server block করবে না
-		}
-	}
+    log.Printf(
+        "📡 Sending notification to %d client(s), user=%s",
+        len(userClients),
+        userID,
+    )
+
+    for client := range userClients {
+        select {
+        case client <- data:
+            log.Printf("✅ Notification queued")
+        default:
+            log.Printf("⚠️ Client buffer full")
+        }
+    }
 }
