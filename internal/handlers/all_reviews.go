@@ -1,9 +1,13 @@
 package handlers
 
 import (
-	"math"
+	"context"
+	"encoding/json"
+	"fmt"
+	"log"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -16,6 +20,7 @@ import (
 
 type ReviewsHandler struct {
 	Queries *gen.Queries
+	Hub     *NotificationHub
 }
 
 // POST /reviews/:id/vote  (body: {"vote":"up"})
@@ -137,6 +142,7 @@ func (rh *ReviewsHandler) AddComment(c *gin.Context) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
 		return
 	}
+
 	var req struct {
 		Content string `json:"content" binding:"required"`
 	}
@@ -144,6 +150,7 @@ func (rh *ReviewsHandler) AddComment(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+
 	comment, err := rh.Queries.AddComment(c.Request.Context(), gen.AddCommentParams{
 		ReviewID: service.UUIDToPGType(uuid.MustParse(reviewID)),
 		UserID:   service.UUIDToPGType(userID),
@@ -153,7 +160,159 @@ func (rh *ReviewsHandler) AddComment(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to add comment"})
 		return
 	}
+
+	// ── রিসপন্স আগেই পাঠিয়ে দিন ────────────────
 	c.JSON(http.StatusCreated, comment)
+
+	// ── ব্যাকগ্রাউন্ডে নোটিফিকেশন পাঠান (goroutine) ─────
+	go rh.sendNotificationForComment(reviewID, userID, comment.Content)
+}
+
+func (rh *ReviewsHandler) sendNotificationForComment(
+	reviewID string,
+	commenterID uuid.UUID,
+	commentContent string,
+) {
+	ctx, cancel := context.WithTimeout(
+		context.Background(),
+		5*time.Second,
+	)
+	defer cancel()
+
+	reviewUUID, err := uuid.Parse(reviewID)
+	if err != nil {
+		log.Printf("Invalid review ID: %v", err)
+		return
+	}
+
+	// Review বের করি
+	review, err := rh.Queries.GetReviewByID(
+		ctx,
+		service.UUIDToPGType(reviewUUID),
+	)
+
+	if err != nil {
+		log.Printf("Failed to get review for notification: %v", err)
+		return
+	}
+
+	// নিজের review-এ নিজে comment করলে notification নয়
+	reviewOwnerID := uuid.UUID(review.UserID.Bytes)
+
+	if reviewOwnerID == commenterID {
+		return
+	}
+
+	// Commenter
+	commenter, err := rh.Queries.GetUserByID(
+		ctx,
+		service.UUIDToPGType(commenterID),
+	)
+
+	if err != nil {
+		log.Printf("Failed to get commenter: %v", err)
+		return
+	}
+
+	// Media title
+	var mediaTitle string
+
+	if review.MovieID.Valid {
+		movie, err := rh.Queries.GetMovieByID(
+			ctx,
+			review.MovieID.Int64,
+		)
+
+		if err == nil {
+			mediaTitle = movie.Title
+		} else {
+			mediaTitle = "your movie review"
+		}
+
+	} else if review.TvID.Valid {
+		tv, err := rh.Queries.GetTVShowByID(
+			ctx,
+			review.TvID.Int64,
+		)
+
+		if err == nil {
+			mediaTitle = tv.Name
+		} else {
+			mediaTitle = "your TV review"
+		}
+	} else {
+		mediaTitle = "your review"
+	}
+
+	title := "New Comment"
+
+	message := fmt.Sprintf(
+		"%s commented on %s",
+		commenter.UserName,
+		mediaTitle,
+	)
+
+	payload := map[string]interface{}{
+		"type":         "comment",
+		"link":         fmt.Sprintf("/reviews/%s", reviewID),
+		"avatar":       commenter.ProfilePicture.String,
+		"comment":      commentContent,
+		"commenter_id": commenterID.String(),
+		"review_id":    reviewID,
+	}
+
+	payloadBytes, err := json.Marshal(payload)
+	if err != nil {
+		log.Printf("Failed to marshal notification payload: %v", err)
+		return
+	}
+
+	log.Printf("Notification payload: %s", string(payloadBytes))
+
+	createdNotification, err := rh.Queries.CreateNotificationWithEvent(
+		ctx,
+		gen.CreateNotificationWithEventParams{
+			EventType:   "comment",
+			Payload:     string(payloadBytes),
+			RecipientID: service.UUIDToPGType(reviewOwnerID),
+			Title:       title,
+			Message:     message,
+		},
+	)
+
+	if err != nil {
+		log.Printf(
+			"Failed to create notification: %v",
+			err,
+		)
+
+		return
+	}
+
+	notificationID := uuid.UUID(
+		createdNotification.ID.Bytes,
+	)
+
+	// ========================================
+	// SSE event
+	// ========================================
+
+	event := NotificationEvent{
+		ID:        notificationID.String(),
+		Type:      "comment",
+		Title:     title,
+		Message:   message,
+		CreatedAt: time.Now().Format(time.RFC3339),
+		Read:      false,
+		Avatar:    commenter.ProfilePicture.String,
+		Link:      fmt.Sprintf("/reviews/%s", reviewID),
+	}
+
+	// একই user-এর connected SSE clients-কে পাঠাও
+	rh.Hub.Publish(
+		reviewOwnerID,
+		event,
+	)
 }
 
 // GET /reviews/:id/comments
@@ -167,48 +326,148 @@ func (rh *ReviewsHandler) GetComments(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"comments": comments, "total": len(comments)})
 }
 func (rh *ReviewsHandler) GetAllReviews(c *gin.Context) {
-	// Parse pagination
-	page, limit := 1, 20
-	if p := c.Query("page"); p != "" {
-		if parsed, _ := strconv.Atoi(p); parsed > 0 {
+	ctx := c.Request.Context()
+
+	// -----------------------------
+	// Pagination
+	// -----------------------------
+	page := 1
+	limit := 20
+
+	if value := c.Query("page"); value != "" {
+		if parsed, err := strconv.Atoi(value); err == nil && parsed > 0 {
 			page = parsed
 		}
 	}
-	if l := c.Query("limit"); l != "" {
-		if parsed, _ := strconv.Atoi(l); parsed > 0 {
+
+	if value := c.Query("limit"); value != "" {
+		if parsed, err := strconv.Atoi(value); err == nil && parsed > 0 {
 			limit = parsed
 		}
 	}
+
+	if limit > 100 {
+		limit = 100
+	}
+
 	offset := (page - 1) * limit
+
+	// -----------------------------
+	// Filters
+	// -----------------------------
+	search := strings.TrimSpace(c.Query("search"))
+
 	mediaType := c.Query("media_type")
 	if mediaType == "" {
 		mediaType = "all"
 	}
-	// Optional: get current user for personalised data (vote, like)
-	var userID pgtype.UUID
-	if uid, ok := service.UserIDFromContext(c); ok {
-		userID = service.UUIDToPGType(uid) // আপনার helper
-	} else {
-		userID = pgtype.UUID{} // NULL
-	}
-	rows, err := rh.Queries.GetAllReviews(c.Request.Context(), gen.GetAllReviewsParams{
-		UserID:    userID,
-		LimitCount:     int32(limit),
-		OffsetCount:    int32(offset),
-		MediaType: mediaType,
-	})
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to fetch reviews"})
+
+	switch mediaType {
+	case "all", "movie", "tv":
+	default:
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "invalid media_type",
+		})
 		return
 	}
 
-	// Total count (you can keep a separate CountAllReviews query or just use the length if full scan is ok)
-	total, _ := rh.Queries.CountAllReviews(c.Request.Context())
-	totalPages := int(math.Ceil(float64(total) / float64(limit)))
+	sort := c.Query("sort")
+	if sort == "" {
+		sort = "newest"
+	}
+
+	switch sort {
+	case "newest", "popular", "discussed", "highest_rated":
+	default:
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "invalid sort",
+		})
+		return
+	}
+
+	// -----------------------------
+	// Rating
+	// -----------------------------
+	var minRating pgtype.Numeric
+
+	if value := c.Query("min_rating"); value != "" {
+		if err := minRating.Scan(value); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": "invalid min_rating",
+			})
+			return
+		}
+	}
+
+	// -----------------------------
+	// Current user
+	// -----------------------------
+	var userID pgtype.UUID
+
+	if uid, ok := service.UserIDFromContext(c); ok {
+		userID = service.UUIDToPGType(uid)
+	}
+
+	// -----------------------------
+	// Get reviews
+	// -----------------------------
+	rows, err := rh.Queries.GetAllReviews(
+		ctx,
+		gen.GetAllReviewsParams{
+			UserID:      userID,
+			MediaType:   mediaType,
+			Search:      search,
+			MinRating:   minRating,
+			Sort:        sort,
+			LimitCount:  int32(limit),
+			OffsetCount: int32(offset),
+		},
+	)
+
+	if err != nil {
+		log.Printf("GetAllReviews error: %v", err)
+
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "failed to fetch reviews",
+		})
+		return
+	}
+
+	// -----------------------------
+	// Count
+	// -----------------------------
+	total, err := rh.Queries.CountAllReviews(
+		ctx,
+		gen.CountAllReviewsParams{
+			MediaType: mediaType,
+			Search:    search,
+			MinRating: minRating,
+		},
+	)
+
+	if err != nil {
+		log.Printf("CountAllReviews error: %v", err)
+
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "failed to count reviews",
+		})
+		return
+	}
+
+	// -----------------------------
+	// Total pages
+	// -----------------------------
+	totalPages := int(
+		(total + int64(limit) - 1) / int64(limit),
+	)
+
 	if totalPages == 0 {
 		totalPages = 1
 	}
 
+	// -----------------------------
+	// Response
+	// -----------------------------
 	c.JSON(http.StatusOK, gin.H{
 		"page":        page,
 		"limit":       limit,

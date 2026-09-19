@@ -12,11 +12,60 @@ import (
 )
 
 const countAllReviews = `-- name: CountAllReviews :one
-SELECT COUNT(*) FROM reviews
+
+SELECT COUNT(*)
+FROM reviews r
+
+INNER JOIN users u
+    ON u.id = r.user_id
+
+LEFT JOIN movies m
+    ON m.id = r.movie_id
+
+LEFT JOIN tv_shows tv
+    ON tv.id = r.tv_id
+
+WHERE
+    (
+        $1 = 'all'
+        OR (
+            $1 = 'movie'
+            AND r.movie_id IS NOT NULL
+        )
+        OR (
+            $1 = 'tv'
+            AND r.tv_id IS NOT NULL
+        )
+    )
+
+    AND (
+        $2 = ''
+        OR r.content ILIKE '%' || $2 || '%'
+        OR u.user_name ILIKE '%' || $2 || '%'
+        OR (
+            r.movie_id IS NOT NULL
+            AND m.title ILIKE '%' || $2 || '%'
+        )
+        OR (
+            r.tv_id IS NOT NULL
+            AND tv.name ILIKE '%' || $2 || '%'
+        )
+    )
+
+    AND (
+        $3 IS NULL
+        OR r.rating >= $3
+    )
 `
 
-func (q *Queries) CountAllReviews(ctx context.Context) (int64, error) {
-	row := q.db.QueryRow(ctx, countAllReviews)
+type CountAllReviewsParams struct {
+	MediaType interface{} `json:"media_type"`
+	Search    interface{} `json:"search"`
+	MinRating interface{} `json:"min_rating"`
+}
+
+func (q *Queries) CountAllReviews(ctx context.Context, arg CountAllReviewsParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countAllReviews, arg.MediaType, arg.Search, arg.MinRating)
 	var count int64
 	err := row.Scan(&count)
 	return count, err
@@ -30,77 +79,180 @@ SELECT
     r.contains_spoilers,
     r.created_at,
     r.updated_at,
+
     r.user_id,
     u.user_name,
     u.profile_picture AS user_profile_picture,
-    COALESCE(m.id, t.id) AS media_id,
-    COALESCE(m.title, t.name) AS media_title,
+
+    -- Media ID
+    CASE
+        WHEN r.movie_id IS NOT NULL THEN r.movie_id
+        ELSE r.tv_id
+    END AS media_id,
+
+    -- Media title
+    CASE
+        WHEN r.movie_id IS NOT NULL THEN m.title
+        ELSE tv.name
+    END AS media_title,
+
+    -- Media type
     CASE
         WHEN r.movie_id IS NOT NULL THEN 'movie'
         ELSE 'tv'
     END AS media_type,
-    COALESCE(m.poster_path, t.poster_path) AS media_poster_path,
-    COALESCE(v.upvotes, 0) AS upvotes,
-    COALESCE(v.downvotes, 0) AS downvotes,
-    COALESCE(c.cnt, 0) AS comment_count,
-    COALESCE(l.cnt, 0) AS like_count,
-    0 AS view_count,
-    rv.vote AS user_vote,
-    CASE WHEN rl.review_id IS NOT NULL THEN TRUE ELSE FALSE END AS user_liked,
-    FALSE AS user_saved
+
+    -- Poster
+    CASE
+        WHEN r.movie_id IS NOT NULL THEN m.poster_path
+        ELSE tv.poster_path
+    END AS media_poster_path,
+
+    -- Upvotes
+    (
+        SELECT COUNT(*)
+        FROM review_votes rv
+        WHERE rv.review_id = r.id
+          AND rv.vote = 'up'
+    )::bigint AS upvotes,
+
+    -- Downvotes
+    (
+        SELECT COUNT(*)
+        FROM review_votes rv
+        WHERE rv.review_id = r.id
+          AND rv.vote = 'down'
+    )::bigint AS downvotes,
+
+    -- Comments
+    (
+        SELECT COUNT(*)
+        FROM review_comments rc
+        WHERE rc.review_id = r.id
+    )::bigint AS comment_count,
+
+    -- Likes
+    (
+        SELECT COUNT(*)
+        FROM review_likes rl
+        WHERE rl.review_id = r.id
+    )::bigint AS like_count,
+
+    -- Current user's vote
+COALESCE(
+    (
+        SELECT rv.vote::text
+        FROM review_votes rv
+        WHERE rv.review_id = r.id
+          AND rv.user_id = $1
+        LIMIT 1
+    ),
+    ''
+) AS user_vote,
+
+    EXISTS (
+        SELECT 1
+        FROM review_likes rl
+        WHERE rl.review_id = r.id
+          AND rl.user_id = $1
+    ) AS user_liked
+
 FROM reviews r
-JOIN users u ON u.id = r.user_id
-LEFT JOIN movies m ON m.id = r.movie_id
-LEFT JOIN tv_shows t ON t.id = r.tv_id
 
-LEFT JOIN LATERAL (
-    SELECT
-        COUNT(*) FILTER (WHERE vote = 'up') AS upvotes,
-        COUNT(*) FILTER (WHERE vote = 'down') AS downvotes
-    FROM review_votes
-    WHERE review_id = r.id
-) v ON TRUE
+INNER JOIN users u
+    ON u.id = r.user_id
 
-LEFT JOIN LATERAL (
-    SELECT COUNT(*) AS cnt
-    FROM review_comments
-    WHERE review_id = r.id
-) c ON TRUE
+LEFT JOIN movies m
+    ON m.id = r.movie_id
 
-LEFT JOIN LATERAL (
-    SELECT COUNT(*) AS cnt
-    FROM review_likes
-    WHERE review_id = r.id
-) l ON TRUE
+LEFT JOIN tv_shows tv
+    ON tv.id = r.tv_id
 
-LEFT JOIN review_votes rv
-    ON rv.review_id = r.id
-    AND rv.user_id = $1
-
-LEFT JOIN review_likes rl
-    ON rl.review_id = r.id
-    AND rl.user_id = $1
-
-WHERE (
-    $2::text = 'all'
-    OR (
-        r.movie_id IS NOT NULL
-        AND $2::text = 'movie'
+WHERE
+    -- Media filter
+    (
+        $2 = 'all'
+        OR (
+            $2 = 'movie'
+            AND r.movie_id IS NOT NULL
+        )
+        OR (
+            $2 = 'tv'
+            AND r.tv_id IS NOT NULL
+        )
     )
-    OR (
-        r.tv_id IS NOT NULL
-        AND $2::text = 'tv'
-    )
-)
 
-ORDER BY r.created_at DESC
-LIMIT $4
-OFFSET $3
+    -- Search
+    AND (
+        $3 = ''
+        OR r.content ILIKE '%' || $3 || '%'
+        OR u.user_name ILIKE '%' || $3 || '%'
+        OR (
+            r.movie_id IS NOT NULL
+            AND m.title ILIKE '%' || $3 || '%'
+        )
+        OR (
+            r.tv_id IS NOT NULL
+            AND tv.name ILIKE '%' || $3 || '%'
+        )
+    )
+
+    -- Rating filter
+    AND (
+        $4 IS NULL
+        OR r.rating >= $4
+    )
+
+ORDER BY
+    CASE
+        WHEN $5 = 'newest'
+        THEN r.created_at
+    END DESC,
+
+    CASE
+        WHEN $5 = 'highest_rated'
+        THEN r.rating
+    END DESC,
+
+    CASE
+        WHEN $5 = 'popular'
+        THEN (
+            (
+                SELECT COUNT(*)
+                FROM review_likes rl
+                WHERE rl.review_id = r.id
+            )
+            +
+            (
+                SELECT COUNT(*)
+                FROM review_votes rv
+                WHERE rv.review_id = r.id
+                  AND rv.vote = 'up'
+            )
+        )
+    END DESC,
+
+    CASE
+        WHEN $5 = 'discussed'
+        THEN (
+            SELECT COUNT(*)
+            FROM review_comments rc
+            WHERE rc.review_id = r.id
+        )
+    END DESC,
+
+    r.created_at DESC
+
+LIMIT $7
+OFFSET $6
 `
 
 type GetAllReviewsParams struct {
 	UserID      pgtype.UUID `json:"user_id"`
-	MediaType   string      `json:"media_type"`
+	MediaType   interface{} `json:"media_type"`
+	Search      interface{} `json:"search"`
+	MinRating   interface{} `json:"min_rating"`
+	Sort        interface{} `json:"sort"`
 	OffsetCount int32       `json:"offset_count"`
 	LimitCount  int32       `json:"limit_count"`
 }
@@ -115,24 +267,25 @@ type GetAllReviewsRow struct {
 	UserID             pgtype.UUID        `json:"user_id"`
 	UserName           string             `json:"user_name"`
 	UserProfilePicture pgtype.Text        `json:"user_profile_picture"`
-	MediaID            int64              `json:"media_id"`
-	MediaTitle         string             `json:"media_title"`
+	MediaID            interface{}        `json:"media_id"`
+	MediaTitle         interface{}        `json:"media_title"`
 	MediaType          string             `json:"media_type"`
-	MediaPosterPath    pgtype.Text        `json:"media_poster_path"`
+	MediaPosterPath    interface{}        `json:"media_poster_path"`
 	Upvotes            int64              `json:"upvotes"`
 	Downvotes          int64              `json:"downvotes"`
 	CommentCount       int64              `json:"comment_count"`
 	LikeCount          int64              `json:"like_count"`
-	ViewCount          int32              `json:"view_count"`
-	UserVote           pgtype.Text        `json:"user_vote"`
+	UserVote           interface{}        `json:"user_vote"`
 	UserLiked          bool               `json:"user_liked"`
-	UserSaved          bool               `json:"user_saved"`
 }
 
 func (q *Queries) GetAllReviews(ctx context.Context, arg GetAllReviewsParams) ([]GetAllReviewsRow, error) {
 	rows, err := q.db.Query(ctx, getAllReviews,
 		arg.UserID,
 		arg.MediaType,
+		arg.Search,
+		arg.MinRating,
+		arg.Sort,
 		arg.OffsetCount,
 		arg.LimitCount,
 	)
@@ -161,10 +314,812 @@ func (q *Queries) GetAllReviews(ctx context.Context, arg GetAllReviewsParams) ([
 			&i.Downvotes,
 			&i.CommentCount,
 			&i.LikeCount,
-			&i.ViewCount,
 			&i.UserVote,
 			&i.UserLiked,
-			&i.UserSaved,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const getReviewsDiscussed = `-- name: GetReviewsDiscussed :many
+SELECT
+    r.id,
+    r.rating,
+    r.content,
+    r.contains_spoilers,
+    r.created_at,
+    r.updated_at,
+    r.user_id,
+
+    u.user_name,
+    u.profile_picture AS user_profile_picture,
+
+    r.movie_id,
+    r.tv_id,
+
+    CASE
+        WHEN r.movie_id IS NOT NULL THEN m.title
+        ELSE tv.name
+    END AS media_title,
+
+    CASE
+        WHEN r.movie_id IS NOT NULL THEN 'movie'
+        ELSE 'tv'
+    END AS media_type,
+
+    CASE
+        WHEN r.movie_id IS NOT NULL THEN m.poster_path
+        ELSE tv.poster_path
+    END AS media_poster_path,
+
+    COALESCE(v.upvotes, 0)::bigint AS upvotes,
+    COALESCE(v.downvotes, 0)::bigint AS downvotes,
+    COALESCE(c.comment_count, 0)::bigint AS comment_count,
+    COALESCE(l.like_count, 0)::bigint AS like_count,
+
+COALESCE(uv.vote, '') AS user_vote,
+EXISTS (
+    SELECT 1
+    FROM review_likes rl
+    WHERE rl.review_id = r.id
+      AND rl.user_id = $1
+) AS user_liked
+FROM reviews r
+
+JOIN users u
+    ON u.id = r.user_id
+
+LEFT JOIN movies m
+    ON m.id = r.movie_id
+
+LEFT JOIN tv_shows tv
+    ON tv.id = r.tv_id
+
+LEFT JOIN (
+    SELECT
+        review_id,
+        COUNT(*) FILTER (WHERE vote = 'up') AS upvotes,
+        COUNT(*) FILTER (WHERE vote = 'down') AS downvotes
+    FROM review_votes
+    GROUP BY review_id
+) v ON v.review_id = r.id
+
+LEFT JOIN (
+    SELECT
+        review_id,
+        COUNT(*) AS comment_count
+    FROM review_comments
+    GROUP BY review_id
+) c ON c.review_id = r.id
+
+LEFT JOIN (
+    SELECT
+        review_id,
+        COUNT(*) AS like_count
+    FROM review_likes
+    GROUP BY review_id
+) l ON l.review_id = r.id
+
+LEFT JOIN review_votes uv
+    ON uv.review_id = r.id
+    AND uv.user_id = $1
+
+LEFT JOIN review_likes ul
+    ON ul.review_id = r.id
+    AND ul.user_id = $1
+
+WHERE
+    (
+        $2 = 'all'
+        OR (
+            $2 = 'movie'
+            AND r.movie_id IS NOT NULL
+        )
+        OR (
+            $2 = 'tv'
+            AND r.tv_id IS NOT NULL
+        )
+    )
+
+    AND (
+        $3 = ''
+        OR COALESCE(m.title, tv.name) ILIKE '%' || $3 || '%'
+        OR r.content ILIKE '%' || $3 || '%'
+        OR u.user_name ILIKE '%' || $3 || '%'
+    )
+
+    AND (
+        $4 IS NULL
+        OR r.rating >= $4
+    )
+
+ORDER BY
+    COALESCE(c.comment_count, 0) DESC,
+    r.created_at DESC
+
+LIMIT $6
+OFFSET $5
+`
+
+type GetReviewsDiscussedParams struct {
+	UserID      pgtype.UUID `json:"user_id"`
+	MediaType   interface{} `json:"media_type"`
+	Search      interface{} `json:"search"`
+	MinRating   interface{} `json:"min_rating"`
+	OffsetCount int32       `json:"offset_count"`
+	LimitCount  int32       `json:"limit_count"`
+}
+
+type GetReviewsDiscussedRow struct {
+	ID                 pgtype.UUID        `json:"id"`
+	Rating             pgtype.Numeric     `json:"rating"`
+	Content            pgtype.Text        `json:"content"`
+	ContainsSpoilers   pgtype.Bool        `json:"contains_spoilers"`
+	CreatedAt          pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
+	UserID             pgtype.UUID        `json:"user_id"`
+	UserName           string             `json:"user_name"`
+	UserProfilePicture pgtype.Text        `json:"user_profile_picture"`
+	MovieID            pgtype.Int8        `json:"movie_id"`
+	TvID               pgtype.Int8        `json:"tv_id"`
+	MediaTitle         interface{}        `json:"media_title"`
+	MediaType          string             `json:"media_type"`
+	MediaPosterPath    interface{}        `json:"media_poster_path"`
+	Upvotes            int64              `json:"upvotes"`
+	Downvotes          int64              `json:"downvotes"`
+	CommentCount       int64              `json:"comment_count"`
+	LikeCount          int64              `json:"like_count"`
+	UserVote           string             `json:"user_vote"`
+	UserLiked          bool               `json:"user_liked"`
+}
+
+func (q *Queries) GetReviewsDiscussed(ctx context.Context, arg GetReviewsDiscussedParams) ([]GetReviewsDiscussedRow, error) {
+	rows, err := q.db.Query(ctx, getReviewsDiscussed,
+		arg.UserID,
+		arg.MediaType,
+		arg.Search,
+		arg.MinRating,
+		arg.OffsetCount,
+		arg.LimitCount,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []GetReviewsDiscussedRow
+	for rows.Next() {
+		var i GetReviewsDiscussedRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Rating,
+			&i.Content,
+			&i.ContainsSpoilers,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.UserID,
+			&i.UserName,
+			&i.UserProfilePicture,
+			&i.MovieID,
+			&i.TvID,
+			&i.MediaTitle,
+			&i.MediaType,
+			&i.MediaPosterPath,
+			&i.Upvotes,
+			&i.Downvotes,
+			&i.CommentCount,
+			&i.LikeCount,
+			&i.UserVote,
+			&i.UserLiked,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const getReviewsHighestRated = `-- name: GetReviewsHighestRated :many
+SELECT
+    r.id,
+    r.rating,
+    r.content,
+    r.contains_spoilers,
+    r.created_at,
+    r.updated_at,
+    r.user_id,
+
+u.user_name,
+    u.profile_picture AS user_profile_picture,
+
+    r.movie_id,
+    r.tv_id,
+
+    CASE
+        WHEN r.movie_id IS NOT NULL THEN m.title
+        WHEN r.tv_id IS NOT NULL THEN tv.name
+    END AS media_title,
+
+    CASE
+        WHEN r.movie_id IS NOT NULL THEN 'movie'
+        ELSE 'tv'
+    END AS media_type,
+
+    CASE
+        WHEN r.movie_id IS NOT NULL THEN m.poster_path
+        ELSE tv.poster_path
+    END AS media_poster_path,
+
+    COALESCE(v.upvotes, 0)::bigint AS upvotes,
+    COALESCE(v.downvotes, 0)::bigint AS downvotes,
+    COALESCE(c.comment_count, 0)::bigint AS comment_count,
+    COALESCE(l.like_count, 0)::bigint AS like_count,
+
+COALESCE(uv.vote, '') AS user_vote,
+EXISTS (
+    SELECT 1
+    FROM review_likes rl
+    WHERE rl.review_id = r.id
+      AND rl.user_id = $1
+) AS user_liked
+FROM reviews r
+
+JOIN users u
+    ON u.id = r.user_id
+
+LEFT JOIN movies m
+    ON m.id = r.movie_id
+
+LEFT JOIN tv_shows tv
+    ON tv.id = r.tv_id
+
+LEFT JOIN (
+    SELECT
+        review_id,
+        COUNT(*) FILTER (WHERE vote = 'up') AS upvotes,
+        COUNT(*) FILTER (WHERE vote = 'down') AS downvotes
+    FROM review_votes
+    GROUP BY review_id
+) v ON v.review_id = r.id
+
+LEFT JOIN (
+    SELECT
+        review_id,
+        COUNT(*) AS comment_count
+    FROM review_comments
+    GROUP BY review_id
+) c ON c.review_id = r.id
+
+LEFT JOIN (
+    SELECT
+        review_id,
+        COUNT(*) AS like_count
+    FROM review_likes
+    GROUP BY review_id
+) l ON l.review_id = r.id
+
+LEFT JOIN review_votes uv
+    ON uv.review_id = r.id
+    AND uv.user_id = $1
+
+LEFT JOIN review_likes ul
+    ON ul.review_id = r.id
+    AND ul.user_id = $1
+
+WHERE
+    (
+        $2 = 'all'
+        OR (
+            $2 = 'movie'
+            AND r.movie_id IS NOT NULL
+        )
+        OR (
+            $2 = 'tv'
+            AND r.tv_id IS NOT NULL
+        )
+    )
+
+    AND (
+        $3 = ''
+        OR COALESCE(m.title, tv.name) ILIKE '%' || $3 || '%'
+        OR r.content ILIKE '%' || $3 || '%'
+        OR u.user_name ILIKE '%' || $3 || '%'
+    )
+
+    AND (
+        $4 IS NULL
+        OR r.rating >= $4
+    )
+
+ORDER BY
+    r.rating DESC,
+    r.created_at DESC
+
+LIMIT $6
+OFFSET $5
+`
+
+type GetReviewsHighestRatedParams struct {
+	UserID      pgtype.UUID `json:"user_id"`
+	MediaType   interface{} `json:"media_type"`
+	Search      interface{} `json:"search"`
+	MinRating   interface{} `json:"min_rating"`
+	OffsetCount int32       `json:"offset_count"`
+	LimitCount  int32       `json:"limit_count"`
+}
+
+type GetReviewsHighestRatedRow struct {
+	ID                 pgtype.UUID        `json:"id"`
+	Rating             pgtype.Numeric     `json:"rating"`
+	Content            pgtype.Text        `json:"content"`
+	ContainsSpoilers   pgtype.Bool        `json:"contains_spoilers"`
+	CreatedAt          pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
+	UserID             pgtype.UUID        `json:"user_id"`
+	UserName           string             `json:"user_name"`
+	UserProfilePicture pgtype.Text        `json:"user_profile_picture"`
+	MovieID            pgtype.Int8        `json:"movie_id"`
+	TvID               pgtype.Int8        `json:"tv_id"`
+	MediaTitle         interface{}        `json:"media_title"`
+	MediaType          string             `json:"media_type"`
+	MediaPosterPath    interface{}        `json:"media_poster_path"`
+	Upvotes            int64              `json:"upvotes"`
+	Downvotes          int64              `json:"downvotes"`
+	CommentCount       int64              `json:"comment_count"`
+	LikeCount          int64              `json:"like_count"`
+	UserVote           string             `json:"user_vote"`
+	UserLiked          bool               `json:"user_liked"`
+}
+
+func (q *Queries) GetReviewsHighestRated(ctx context.Context, arg GetReviewsHighestRatedParams) ([]GetReviewsHighestRatedRow, error) {
+	rows, err := q.db.Query(ctx, getReviewsHighestRated,
+		arg.UserID,
+		arg.MediaType,
+		arg.Search,
+		arg.MinRating,
+		arg.OffsetCount,
+		arg.LimitCount,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []GetReviewsHighestRatedRow
+	for rows.Next() {
+		var i GetReviewsHighestRatedRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Rating,
+			&i.Content,
+			&i.ContainsSpoilers,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.UserID,
+			&i.UserName,
+			&i.UserProfilePicture,
+			&i.MovieID,
+			&i.TvID,
+			&i.MediaTitle,
+			&i.MediaType,
+			&i.MediaPosterPath,
+			&i.Upvotes,
+			&i.Downvotes,
+			&i.CommentCount,
+			&i.LikeCount,
+			&i.UserVote,
+			&i.UserLiked,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const getReviewsNewest = `-- name: GetReviewsNewest :many
+SELECT
+    r.id,
+    r.rating,
+    r.content,
+    r.contains_spoilers,
+    r.created_at,
+    r.updated_at,
+    r.user_id,
+
+u.user_name,
+    u.profile_picture AS user_profile_picture,
+
+    r.movie_id,
+    r.tv_id,
+
+    CASE
+        WHEN r.movie_id IS NOT NULL THEN m.title
+        WHEN r.tv_id IS NOT NULL THEN tv.name
+    END AS media_title,
+
+    CASE
+        WHEN r.movie_id IS NOT NULL THEN 'movie'
+        WHEN r.tv_id IS NOT NULL THEN 'tv'
+    END AS media_type,
+
+    CASE
+        WHEN r.movie_id IS NOT NULL THEN m.poster_path
+        WHEN r.tv_id IS NOT NULL THEN tv.poster_path
+    END AS media_poster_path,
+
+    COALESCE(v.upvotes, 0)::bigint AS upvotes,
+    COALESCE(v.downvotes, 0)::bigint AS downvotes,
+    COALESCE(c.comment_count, 0)::bigint AS comment_count,
+    COALESCE(l.like_count, 0)::bigint AS like_count,
+
+COALESCE(uv.vote, '') AS user_vote,
+EXISTS (
+    SELECT 1
+    FROM review_likes rl
+    WHERE rl.review_id = r.id
+      AND rl.user_id = $1
+) AS user_liked
+FROM reviews r
+
+JOIN users u
+    ON u.id = r.user_id
+
+LEFT JOIN movies m
+    ON m.id = r.movie_id
+
+LEFT JOIN tv_shows tv
+    ON tv.id = r.tv_id
+
+LEFT JOIN (
+    SELECT
+        review_id,
+        COUNT(*) FILTER (WHERE vote = 'up') AS upvotes,
+        COUNT(*) FILTER (WHERE vote = 'down') AS downvotes
+    FROM review_votes
+    GROUP BY review_id
+) v
+    ON v.review_id = r.id
+
+LEFT JOIN (
+    SELECT
+        review_id,
+        COUNT(*) AS comment_count
+    FROM review_comments
+    GROUP BY review_id
+) c
+    ON c.review_id = r.id
+
+LEFT JOIN (
+    SELECT
+        review_id,
+        COUNT(*) AS like_count
+    FROM review_likes
+    GROUP BY review_id
+) l
+    ON l.review_id = r.id
+
+LEFT JOIN review_votes uv
+    ON uv.review_id = r.id
+    AND uv.user_id = $1
+
+LEFT JOIN review_likes ul
+    ON ul.review_id = r.id
+    AND ul.user_id = $1
+
+WHERE
+    (
+        $2 = 'all'
+        OR (
+            $2 = 'movie'
+            AND r.movie_id IS NOT NULL
+        )
+        OR (
+            $2 = 'tv'
+            AND r.tv_id IS NOT NULL
+        )
+    )
+
+    AND (
+        $3 = ''
+        OR COALESCE(m.title, tv.name) ILIKE '%' || $3 || '%'
+        OR r.content ILIKE '%' || $3 || '%'
+        OR u.user_name ILIKE '%' || $3 || '%'
+    )
+
+    AND (
+        $4 IS NULL
+        OR r.rating >= $4
+    )
+
+ORDER BY r.created_at DESC
+
+LIMIT $6
+OFFSET $5
+`
+
+type GetReviewsNewestParams struct {
+	UserID      pgtype.UUID `json:"user_id"`
+	MediaType   interface{} `json:"media_type"`
+	Search      interface{} `json:"search"`
+	MinRating   interface{} `json:"min_rating"`
+	OffsetCount int32       `json:"offset_count"`
+	LimitCount  int32       `json:"limit_count"`
+}
+
+type GetReviewsNewestRow struct {
+	ID                 pgtype.UUID        `json:"id"`
+	Rating             pgtype.Numeric     `json:"rating"`
+	Content            pgtype.Text        `json:"content"`
+	ContainsSpoilers   pgtype.Bool        `json:"contains_spoilers"`
+	CreatedAt          pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
+	UserID             pgtype.UUID        `json:"user_id"`
+	UserName           string             `json:"user_name"`
+	UserProfilePicture pgtype.Text        `json:"user_profile_picture"`
+	MovieID            pgtype.Int8        `json:"movie_id"`
+	TvID               pgtype.Int8        `json:"tv_id"`
+	MediaTitle         interface{}        `json:"media_title"`
+	MediaType          interface{}        `json:"media_type"`
+	MediaPosterPath    interface{}        `json:"media_poster_path"`
+	Upvotes            int64              `json:"upvotes"`
+	Downvotes          int64              `json:"downvotes"`
+	CommentCount       int64              `json:"comment_count"`
+	LikeCount          int64              `json:"like_count"`
+	UserVote           string             `json:"user_vote"`
+	UserLiked          bool               `json:"user_liked"`
+}
+
+func (q *Queries) GetReviewsNewest(ctx context.Context, arg GetReviewsNewestParams) ([]GetReviewsNewestRow, error) {
+	rows, err := q.db.Query(ctx, getReviewsNewest,
+		arg.UserID,
+		arg.MediaType,
+		arg.Search,
+		arg.MinRating,
+		arg.OffsetCount,
+		arg.LimitCount,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []GetReviewsNewestRow
+	for rows.Next() {
+		var i GetReviewsNewestRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Rating,
+			&i.Content,
+			&i.ContainsSpoilers,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.UserID,
+			&i.UserName,
+			&i.UserProfilePicture,
+			&i.MovieID,
+			&i.TvID,
+			&i.MediaTitle,
+			&i.MediaType,
+			&i.MediaPosterPath,
+			&i.Upvotes,
+			&i.Downvotes,
+			&i.CommentCount,
+			&i.LikeCount,
+			&i.UserVote,
+			&i.UserLiked,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const getReviewsPopular = `-- name: GetReviewsPopular :many
+SELECT
+    r.id,
+    r.rating,
+    r.content,
+    r.contains_spoilers,
+    r.created_at,
+    r.updated_at,
+    r.user_id,
+
+u.user_name,
+    u.profile_picture AS user_profile_picture,
+
+    r.movie_id,
+    r.tv_id,
+
+    CASE
+        WHEN r.movie_id IS NOT NULL THEN m.title
+        ELSE tv.name
+    END AS media_title,
+
+    CASE
+        WHEN r.movie_id IS NOT NULL THEN 'movie'
+        ELSE 'tv'
+    END AS media_type,
+
+    CASE
+        WHEN r.movie_id IS NOT NULL THEN m.poster_path
+        ELSE tv.poster_path
+    END AS media_poster_path,
+
+    COALESCE(v.upvotes, 0)::bigint AS upvotes,
+    COALESCE(v.downvotes, 0)::bigint AS downvotes,
+    COALESCE(c.comment_count, 0)::bigint AS comment_count,
+    COALESCE(l.like_count, 0)::bigint AS like_count,
+
+COALESCE(uv.vote, '') AS user_vote,
+EXISTS (
+    SELECT 1
+    FROM review_likes rl
+    WHERE rl.review_id = r.id
+      AND rl.user_id = $1
+) AS user_liked
+FROM reviews r
+
+JOIN users u
+    ON u.id = r.user_id
+
+LEFT JOIN movies m
+    ON m.id = r.movie_id
+
+LEFT JOIN tv_shows tv
+    ON tv.id = r.tv_id
+
+LEFT JOIN (
+    SELECT
+        review_id,
+        COUNT(*) FILTER (WHERE vote = 'up') AS upvotes,
+        COUNT(*) FILTER (WHERE vote = 'down') AS downvotes
+    FROM review_votes
+    GROUP BY review_id
+) v ON v.review_id = r.id
+
+LEFT JOIN (
+    SELECT
+        review_id,
+        COUNT(*) AS comment_count
+    FROM review_comments
+    GROUP BY review_id
+) c ON c.review_id = r.id
+
+LEFT JOIN (
+    SELECT
+        review_id,
+        COUNT(*) AS like_count
+    FROM review_likes
+    GROUP BY review_id
+) l ON l.review_id = r.id
+
+LEFT JOIN review_votes uv
+    ON uv.review_id = r.id
+    AND uv.user_id = $1
+
+LEFT JOIN review_likes ul
+    ON ul.review_id = r.id
+    AND ul.user_id = $1
+
+WHERE
+    (
+        $2 = 'all'
+        OR (
+            $2 = 'movie'
+            AND r.movie_id IS NOT NULL
+        )
+        OR (
+            $2 = 'tv'
+            AND r.tv_id IS NOT NULL
+        )
+    )
+
+    AND (
+        $3 = ''
+        OR COALESCE(m.title, tv.name) ILIKE '%' || $3 || '%'
+        OR r.content ILIKE '%' || $3 || '%'
+        OR u.user_name ILIKE '%' || $3 || '%'
+    )
+
+    AND (
+        $4 IS NULL
+        OR r.rating >= $4
+    )
+
+ORDER BY
+    (
+        COALESCE(l.like_count, 0)
+        + COALESCE(v.upvotes, 0)
+    ) DESC,
+    r.created_at DESC
+
+LIMIT $6
+OFFSET $5
+`
+
+type GetReviewsPopularParams struct {
+	UserID      pgtype.UUID `json:"user_id"`
+	MediaType   interface{} `json:"media_type"`
+	Search      interface{} `json:"search"`
+	MinRating   interface{} `json:"min_rating"`
+	OffsetCount int32       `json:"offset_count"`
+	LimitCount  int32       `json:"limit_count"`
+}
+
+type GetReviewsPopularRow struct {
+	ID                 pgtype.UUID        `json:"id"`
+	Rating             pgtype.Numeric     `json:"rating"`
+	Content            pgtype.Text        `json:"content"`
+	ContainsSpoilers   pgtype.Bool        `json:"contains_spoilers"`
+	CreatedAt          pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
+	UserID             pgtype.UUID        `json:"user_id"`
+	UserName           string             `json:"user_name"`
+	UserProfilePicture pgtype.Text        `json:"user_profile_picture"`
+	MovieID            pgtype.Int8        `json:"movie_id"`
+	TvID               pgtype.Int8        `json:"tv_id"`
+	MediaTitle         interface{}        `json:"media_title"`
+	MediaType          string             `json:"media_type"`
+	MediaPosterPath    interface{}        `json:"media_poster_path"`
+	Upvotes            int64              `json:"upvotes"`
+	Downvotes          int64              `json:"downvotes"`
+	CommentCount       int64              `json:"comment_count"`
+	LikeCount          int64              `json:"like_count"`
+	UserVote           string             `json:"user_vote"`
+	UserLiked          bool               `json:"user_liked"`
+}
+
+func (q *Queries) GetReviewsPopular(ctx context.Context, arg GetReviewsPopularParams) ([]GetReviewsPopularRow, error) {
+	rows, err := q.db.Query(ctx, getReviewsPopular,
+		arg.UserID,
+		arg.MediaType,
+		arg.Search,
+		arg.MinRating,
+		arg.OffsetCount,
+		arg.LimitCount,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []GetReviewsPopularRow
+	for rows.Next() {
+		var i GetReviewsPopularRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Rating,
+			&i.Content,
+			&i.ContainsSpoilers,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.UserID,
+			&i.UserName,
+			&i.UserProfilePicture,
+			&i.MovieID,
+			&i.TvID,
+			&i.MediaTitle,
+			&i.MediaType,
+			&i.MediaPosterPath,
+			&i.Upvotes,
+			&i.Downvotes,
+			&i.CommentCount,
+			&i.LikeCount,
+			&i.UserVote,
+			&i.UserLiked,
 		); err != nil {
 			return nil, err
 		}
@@ -267,109 +1222,6 @@ type GetTopRatedMediaByPeriodRow struct {
 func (q *Queries) GetTopRatedMediaByPeriod(ctx context.Context, arg GetTopRatedMediaByPeriodParams) (GetTopRatedMediaByPeriodRow, error) {
 	row := q.db.QueryRow(ctx, getTopRatedMediaByPeriod, arg.CreatedAt, arg.CreatedAt_2)
 	var i GetTopRatedMediaByPeriodRow
-	err := row.Scan(
-		&i.MediaID,
-		&i.MediaType,
-		&i.MediaTitle,
-		&i.PosterPath,
-		&i.AvgRating,
-		&i.ReviewCount,
-		&i.TopReview,
-		&i.UserName,
-		&i.UserID,
-		&i.CreatedAt,
-		&i.Genres,
-	)
-	return i, err
-}
-
-const getTopRatedMediaLastWeek = `-- name: GetTopRatedMediaLastWeek :one
-WITH last_week_reviews AS (
-    SELECT
-        r.movie_id,
-        r.tv_id,
-        CASE WHEN r.movie_id IS NOT NULL THEN 'movie' ELSE 'tv' END AS media_type,
-        COALESCE(m.title, t.name) AS media_title,
-        COALESCE(m.poster_path, t.poster_path) AS media_poster_path,
-        AVG(r.rating) AS avg_rating,
-        COUNT(*) AS review_count
-    FROM reviews r
-    LEFT JOIN movies m ON r.movie_id = m.id
-    LEFT JOIN tv_shows t ON r.tv_id = t.id
-    WHERE r.created_at >= NOW() - INTERVAL '7 days'
-    GROUP BY r.movie_id, r.tv_id, media_type, media_title, media_poster_path
-),
-top_review_text AS (
-    SELECT DISTINCT ON (lr.movie_id, lr.tv_id)
-        lr.movie_id,
-        lr.tv_id,
-        r2.content AS top_review,
-        r2.user_id,
-        u.user_name,
-        r2.created_at
-    FROM last_week_reviews lr
-    JOIN reviews r2 ON (
-        (lr.movie_id IS NOT NULL AND r2.movie_id = lr.movie_id) OR
-        (lr.tv_id IS NOT NULL AND r2.tv_id = lr.tv_id)
-    )
-    JOIN users u ON u.id = r2.user_id
-    LEFT JOIN review_likes rl ON rl.review_id = r2.id
-    WHERE r2.created_at >= NOW() - INTERVAL '7 days'
-    GROUP BY lr.movie_id, lr.tv_id, r2.id, u.user_name
-    ORDER BY lr.movie_id, lr.tv_id, COUNT(rl.user_id) DESC
-)
-SELECT
-    COALESCE(lr.movie_id::text, lr.tv_id::text) AS media_id,
-    lr.media_type,
-    lr.media_title,
-    lr.media_poster_path AS poster_path,
-    lr.avg_rating,
-    lr.review_count,
-    tr.top_review,
-    tr.user_name,
-    tr.user_id,
-    tr.created_at,
-    -- জঁরা আনার জন্য
-    CASE
-        WHEN lr.movie_id IS NOT NULL THEN (
-            SELECT ARRAY_AGG(g.name)
-            FROM genres g
-            JOIN movies m2 ON m2.id = lr.movie_id
-            WHERE g.id = ANY(m2.genre_ids)
-        )
-        ELSE (
-            SELECT ARRAY_AGG(g.name)
-            FROM genres g
-            JOIN tv_shows t2 ON t2.id = lr.tv_id
-            WHERE g.id = ANY(t2.genre_ids)
-        )
-    END AS genres
-FROM last_week_reviews lr
-JOIN top_review_text tr ON (
-    (lr.movie_id IS NOT NULL AND tr.movie_id = lr.movie_id) OR
-    (lr.tv_id IS NOT NULL AND tr.tv_id = lr.tv_id)
-)
-ORDER BY lr.avg_rating DESC, lr.review_count DESC
-LIMIT 1
-`
-
-type GetTopRatedMediaLastWeekRow struct {
-	MediaID     interface{}        `json:"media_id"`
-	MediaType   string             `json:"media_type"`
-	MediaTitle  string             `json:"media_title"`
-	PosterPath  pgtype.Text        `json:"poster_path"`
-	AvgRating   float64            `json:"avg_rating"`
-	ReviewCount int64              `json:"review_count"`
-	TopReview   pgtype.Text        `json:"top_review"`
-	UserName    string             `json:"user_name"`
-	UserID      pgtype.UUID        `json:"user_id"`
-	CreatedAt   pgtype.Timestamptz `json:"created_at"`
-	Genres      interface{}        `json:"genres"`
-}
-
-func (q *Queries) GetTopRatedMediaLastWeek(ctx context.Context) (GetTopRatedMediaLastWeekRow, error) {
-	row := q.db.QueryRow(ctx, getTopRatedMediaLastWeek)
-	var i GetTopRatedMediaLastWeekRow
 	err := row.Scan(
 		&i.MediaID,
 		&i.MediaType,

@@ -11,6 +11,66 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const addMovieToWatchlist = `-- name: AddMovieToWatchlist :one
+INSERT INTO user_watchlist (
+    user_id,
+    movie_id
+)
+VALUES (
+    $1,
+    $2
+)
+RETURNING id, user_id, movie_id, tv_id, added_at
+`
+
+type AddMovieToWatchlistParams struct {
+	UserID  pgtype.UUID `json:"user_id"`
+	MovieID pgtype.Int8 `json:"movie_id"`
+}
+
+func (q *Queries) AddMovieToWatchlist(ctx context.Context, arg AddMovieToWatchlistParams) (UserWatchlist, error) {
+	row := q.db.QueryRow(ctx, addMovieToWatchlist, arg.UserID, arg.MovieID)
+	var i UserWatchlist
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.MovieID,
+		&i.TvID,
+		&i.AddedAt,
+	)
+	return i, err
+}
+
+const addTVToWatchlist = `-- name: AddTVToWatchlist :one
+INSERT INTO user_watchlist (
+    user_id,
+    tv_id
+)
+VALUES (
+    $1,
+    $2
+)
+RETURNING id, user_id, movie_id, tv_id, added_at
+`
+
+type AddTVToWatchlistParams struct {
+	UserID pgtype.UUID `json:"user_id"`
+	TvID   pgtype.Int8 `json:"tv_id"`
+}
+
+func (q *Queries) AddTVToWatchlist(ctx context.Context, arg AddTVToWatchlistParams) (UserWatchlist, error) {
+	row := q.db.QueryRow(ctx, addTVToWatchlist, arg.UserID, arg.TvID)
+	var i UserWatchlist
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.MovieID,
+		&i.TvID,
+		&i.AddedAt,
+	)
+	return i, err
+}
+
 const countWatchlistByUserID = `-- name: CountWatchlistByUserID :one
 SELECT COUNT(*) FROM user_watchlist WHERE user_id = $1
 `
@@ -20,6 +80,48 @@ func (q *Queries) CountWatchlistByUserID(ctx context.Context, userID pgtype.UUID
 	var count int64
 	err := row.Scan(&count)
 	return count, err
+}
+
+const isMovieInWatchlist = `-- name: IsMovieInWatchlist :one
+SELECT EXISTS (
+    SELECT 1
+    FROM user_watchlist
+    WHERE user_id = $1
+      AND movie_id = $2
+)
+`
+
+type IsMovieInWatchlistParams struct {
+	UserID  pgtype.UUID `json:"user_id"`
+	MovieID pgtype.Int8 `json:"movie_id"`
+}
+
+func (q *Queries) IsMovieInWatchlist(ctx context.Context, arg IsMovieInWatchlistParams) (bool, error) {
+	row := q.db.QueryRow(ctx, isMovieInWatchlist, arg.UserID, arg.MovieID)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
+const isTVInWatchlist = `-- name: IsTVInWatchlist :one
+SELECT EXISTS (
+    SELECT 1
+    FROM user_watchlist
+    WHERE user_id = $1
+      AND tv_id = $2
+)
+`
+
+type IsTVInWatchlistParams struct {
+	UserID pgtype.UUID `json:"user_id"`
+	TvID   pgtype.Int8 `json:"tv_id"`
+}
+
+func (q *Queries) IsTVInWatchlist(ctx context.Context, arg IsTVInWatchlistParams) (bool, error) {
+	row := q.db.QueryRow(ctx, isTVInWatchlist, arg.UserID, arg.TvID)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
 }
 
 const listWatchlistByUserID = `-- name: ListWatchlistByUserID :many
@@ -81,4 +183,42 @@ func (q *Queries) ListWatchlistByUserID(ctx context.Context, arg ListWatchlistBy
 		return nil, err
 	}
 	return items, nil
+}
+
+const removeMovieFromWatchlist = `-- name: RemoveMovieFromWatchlist :execrows
+DELETE FROM user_watchlist
+WHERE user_id = $1
+  AND movie_id = $2
+`
+
+type RemoveMovieFromWatchlistParams struct {
+	UserID  pgtype.UUID `json:"user_id"`
+	MovieID pgtype.Int8 `json:"movie_id"`
+}
+
+func (q *Queries) RemoveMovieFromWatchlist(ctx context.Context, arg RemoveMovieFromWatchlistParams) (int64, error) {
+	result, err := q.db.Exec(ctx, removeMovieFromWatchlist, arg.UserID, arg.MovieID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const removeTVFromWatchlist = `-- name: RemoveTVFromWatchlist :execrows
+DELETE FROM user_watchlist
+WHERE user_id = $1
+  AND tv_id = $2
+`
+
+type RemoveTVFromWatchlistParams struct {
+	UserID pgtype.UUID `json:"user_id"`
+	TvID   pgtype.Int8 `json:"tv_id"`
+}
+
+func (q *Queries) RemoveTVFromWatchlist(ctx context.Context, arg RemoveTVFromWatchlistParams) (int64, error) {
+	result, err := q.db.Exec(ctx, removeTVFromWatchlist, arg.UserID, arg.TvID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }

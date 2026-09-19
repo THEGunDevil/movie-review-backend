@@ -84,7 +84,7 @@ LIMIT $3 OFFSET $4;
 
 -- name: GetReviewByID :one
 SELECT
-    r.id, r.user_id, r.movie_id, r.rating, r.content,
+    r.id, r.user_id, r.movie_id, r.tv_id, r.rating, r.content,
     r.contains_spoilers, r.created_at, r.updated_at,
     u.user_name AS user_name, u.email AS user_email
 FROM reviews r

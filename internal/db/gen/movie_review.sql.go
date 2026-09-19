@@ -86,7 +86,7 @@ func (q *Queries) DeleteReview(ctx context.Context, arg DeleteReviewParams) erro
 
 const getReviewByID = `-- name: GetReviewByID :one
 SELECT
-    r.id, r.user_id, r.movie_id, r.rating, r.content,
+    r.id, r.user_id, r.movie_id, r.tv_id, r.rating, r.content,
     r.contains_spoilers, r.created_at, r.updated_at,
     u.user_name AS user_name, u.email AS user_email
 FROM reviews r
@@ -98,6 +98,7 @@ type GetReviewByIDRow struct {
 	ID               pgtype.UUID        `json:"id"`
 	UserID           pgtype.UUID        `json:"user_id"`
 	MovieID          pgtype.Int8        `json:"movie_id"`
+	TvID             pgtype.Int8        `json:"tv_id"`
 	Rating           pgtype.Numeric     `json:"rating"`
 	Content          pgtype.Text        `json:"content"`
 	ContainsSpoilers pgtype.Bool        `json:"contains_spoilers"`
@@ -114,6 +115,7 @@ func (q *Queries) GetReviewByID(ctx context.Context, id pgtype.UUID) (GetReviewB
 		&i.ID,
 		&i.UserID,
 		&i.MovieID,
+		&i.TvID,
 		&i.Rating,
 		&i.Content,
 		&i.ContainsSpoilers,

@@ -8,6 +8,13 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+type Event struct {
+	ID        pgtype.UUID        `json:"id"`
+	EventType string             `json:"event_type"`
+	Payload   []byte             `json:"payload"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+}
+
 type Follow struct {
 	FollowerID  pgtype.UUID        `json:"follower_id"`
 	FollowingID pgtype.UUID        `json:"following_id"`
@@ -77,12 +84,13 @@ type MovieVideo struct {
 }
 
 type Notification struct {
-	ID        pgtype.UUID        `json:"id"`
-	Title     string             `json:"title"`
-	Message   string             `json:"message"`
-	Read      bool               `json:"read"`
-	CreatedAt pgtype.Timestamptz `json:"created_at"`
-	EventID   pgtype.UUID        `json:"event_id"`
+	ID          pgtype.UUID        `json:"id"`
+	RecipientID pgtype.UUID        `json:"recipient_id"`
+	Title       string             `json:"title"`
+	Message     string             `json:"message"`
+	Read        bool               `json:"read"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	EventID     pgtype.UUID        `json:"event_id"`
 }
 
 type Person struct {
@@ -260,11 +268,4 @@ type UserWatchlist struct {
 	MovieID pgtype.Int8        `json:"movie_id"`
 	TvID    pgtype.Int8        `json:"tv_id"`
 	AddedAt pgtype.Timestamptz `json:"added_at"`
-}
-
-type WebhookEvent struct {
-	ID        pgtype.UUID        `json:"id"`
-	EventType string             `json:"event_type"`
-	Payload   []byte             `json:"payload"`
-	CreatedAt pgtype.Timestamptz `json:"created_at"`
 }

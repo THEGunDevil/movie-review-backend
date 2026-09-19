@@ -11,23 +11,61 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-const createNotification = `-- name: CreateNotification :one
-INSERT INTO notifications (title, message, event_id)
-VALUES ($1, $2, $3)
-RETURNING id, title, message, read, created_at, event_id
+const createNotificationWithEvent = `-- name: CreateNotificationWithEvent :one
+
+WITH new_event AS (
+    INSERT INTO events (
+        event_type,
+        payload
+    )
+    VALUES (
+        $4,
+        $5::text::jsonb
+    )
+    RETURNING id
+)
+INSERT INTO notifications (
+    title,
+    message,
+    recipient_id,
+    event_id
+)
+SELECT
+    $1,
+    $2,
+    $3,
+    new_event.id
+FROM new_event
+RETURNING
+    id,
+    recipient_id,
+    title,
+    message,
+    read,
+    created_at,
+    event_id
 `
 
-type CreateNotificationParams struct {
-	Title   string      `json:"title"`
-	Message string      `json:"message"`
-	EventID pgtype.UUID `json:"event_id"`
+type CreateNotificationWithEventParams struct {
+	Title       string      `json:"title"`
+	Message     string      `json:"message"`
+	RecipientID pgtype.UUID `json:"recipient_id"`
+	EventType   string      `json:"event_type"`
+	Payload     string      `json:"payload"`
 }
 
-func (q *Queries) CreateNotification(ctx context.Context, arg CreateNotificationParams) (Notification, error) {
-	row := q.db.QueryRow(ctx, createNotification, arg.Title, arg.Message, arg.EventID)
+func (q *Queries) CreateNotificationWithEvent(ctx context.Context, arg CreateNotificationWithEventParams) (Notification, error) {
+	row := q.db.QueryRow(ctx, createNotificationWithEvent,
+		arg.Title,
+		arg.Message,
+		arg.RecipientID,
+		arg.EventType,
+		arg.Payload,
+	)
 	var i Notification
 	err := row.Scan(
 		&i.ID,
+		&i.RecipientID,
 		&i.Title,
 		&i.Message,
 		&i.Read,
@@ -37,44 +75,50 @@ func (q *Queries) CreateNotification(ctx context.Context, arg CreateNotification
 	return i, err
 }
 
-const createWebhookEvent = `-- name: CreateWebhookEvent :one
-INSERT INTO webhook_events (event_type, payload)
-VALUES ($1, $2)
-RETURNING id, event_type, payload, created_at
+const getNotificationsByUser = `-- name: GetNotificationsByUser :many
+
+SELECT
+    n.id,
+    n.title,
+    n.message,
+    n.read,
+    n.created_at,
+    n.event_id,
+    e.event_type,
+    e.payload
+FROM notifications n
+LEFT JOIN events e
+    ON e.id = n.event_id
+WHERE n.recipient_id = $1
+ORDER BY n.created_at DESC
+LIMIT $2
 `
 
-type CreateWebhookEventParams struct {
-	EventType string `json:"event_type"`
-	Payload   []byte `json:"payload"`
+type GetNotificationsByUserParams struct {
+	RecipientID pgtype.UUID `json:"recipient_id"`
+	Limit       int32       `json:"limit"`
 }
 
-func (q *Queries) CreateWebhookEvent(ctx context.Context, arg CreateWebhookEventParams) (WebhookEvent, error) {
-	row := q.db.QueryRow(ctx, createWebhookEvent, arg.EventType, arg.Payload)
-	var i WebhookEvent
-	err := row.Scan(
-		&i.ID,
-		&i.EventType,
-		&i.Payload,
-		&i.CreatedAt,
-	)
-	return i, err
+type GetNotificationsByUserRow struct {
+	ID        pgtype.UUID        `json:"id"`
+	Title     string             `json:"title"`
+	Message   string             `json:"message"`
+	Read      bool               `json:"read"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	EventID   pgtype.UUID        `json:"event_id"`
+	EventType pgtype.Text        `json:"event_type"`
+	Payload   []byte             `json:"payload"`
 }
 
-const getNotifications = `-- name: GetNotifications :many
-SELECT id, title, message, read, created_at, event_id FROM notifications
-ORDER BY created_at DESC
-LIMIT $1
-`
-
-func (q *Queries) GetNotifications(ctx context.Context, limit int32) ([]Notification, error) {
-	rows, err := q.db.Query(ctx, getNotifications, limit)
+func (q *Queries) GetNotificationsByUser(ctx context.Context, arg GetNotificationsByUserParams) ([]GetNotificationsByUserRow, error) {
+	rows, err := q.db.Query(ctx, getNotificationsByUser, arg.RecipientID, arg.Limit)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []Notification
+	var items []GetNotificationsByUserRow
 	for rows.Next() {
-		var i Notification
+		var i GetNotificationsByUserRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.Title,
@@ -82,6 +126,8 @@ func (q *Queries) GetNotifications(ctx context.Context, limit int32) ([]Notifica
 			&i.Read,
 			&i.CreatedAt,
 			&i.EventID,
+			&i.EventType,
+			&i.Payload,
 		); err != nil {
 			return nil, err
 		}
@@ -93,11 +139,33 @@ func (q *Queries) GetNotifications(ctx context.Context, limit int32) ([]Notifica
 	return items, nil
 }
 
-const markNotificationRead = `-- name: MarkNotificationRead :exec
-UPDATE notifications SET read = true WHERE id = $1
+const markAllNotificationsRead = `-- name: MarkAllNotificationsRead :exec
+
+UPDATE notifications
+SET read = true
+WHERE recipient_id = $1
+  AND read = false
 `
 
-func (q *Queries) MarkNotificationRead(ctx context.Context, id pgtype.UUID) error {
-	_, err := q.db.Exec(ctx, markNotificationRead, id)
+func (q *Queries) MarkAllNotificationsRead(ctx context.Context, recipientID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, markAllNotificationsRead, recipientID)
+	return err
+}
+
+const markNotificationRead = `-- name: MarkNotificationRead :exec
+
+UPDATE notifications
+SET read = true
+WHERE id = $1
+  AND recipient_id = $2
+`
+
+type MarkNotificationReadParams struct {
+	ID          pgtype.UUID `json:"id"`
+	RecipientID pgtype.UUID `json:"recipient_id"`
+}
+
+func (q *Queries) MarkNotificationRead(ctx context.Context, arg MarkNotificationReadParams) error {
+	_, err := q.db.Exec(ctx, markNotificationRead, arg.ID, arg.RecipientID)
 	return err
 }

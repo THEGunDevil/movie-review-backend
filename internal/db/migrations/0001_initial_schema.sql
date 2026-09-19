@@ -303,32 +303,66 @@ CREATE TABLE review_reports (
     reason TEXT NOT NULL,
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
-CREATE TABLE webhook_events (
+CREATE TABLE events (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+
     event_type TEXT NOT NULL,
+
     payload JSONB NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+
+-- ============================================================
+-- NOTIFICATIONS
+-- ============================================================
 
 CREATE TABLE notifications (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+
+    recipient_id UUID NOT NULL
+        REFERENCES users(id)
+        ON DELETE CASCADE,
+
     title TEXT NOT NULL,
+
     message TEXT NOT NULL,
-    read BOOLEAN NOT NULL DEFAULT false,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    event_id UUID REFERENCES webhook_events(id) ON DELETE SET NULL
+
+    read BOOLEAN NOT NULL DEFAULT FALSE,
+
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    event_id UUID
+        REFERENCES events(id)
+        ON DELETE SET NULL
 );
 
-CREATE INDEX idx_notifications_created_at ON notifications(created_at DESC);
--- Indexes
-CREATE INDEX idx_review_votes_review_id ON review_votes(review_id);
-CREATE INDEX idx_review_likes_review_id ON review_likes(review_id);
-CREATE INDEX idx_review_comments_review_id ON review_comments(review_id);
 
 -- ============================================================
 -- INDEXES
 -- ============================================================
--- Movies
+
+CREATE INDEX idx_events_created_at
+ON events(created_at DESC);
+
+CREATE INDEX idx_events_event_type
+ON events(event_type);
+
+CREATE INDEX idx_notifications_recipient_created
+ON notifications(recipient_id, created_at DESC);
+
+CREATE INDEX idx_notifications_event_id
+ON notifications(event_id);
+
+CREATE INDEX idx_notifications_recipient_unread
+ON notifications(recipient_id, read)
+WHERE read = FALSE;
+
+CREATE INDEX idx_notifications_created_at ON notifications(created_at DESC);
+CREATE INDEX idx_review_votes_review_id ON review_votes(review_id);
+CREATE INDEX idx_review_likes_review_id ON review_likes(review_id);
+CREATE INDEX idx_review_comments_review_id ON review_comments(review_id);
 CREATE INDEX idx_movies_popularity ON movies(popularity DESC);
 CREATE INDEX idx_movies_vote_average ON movies(vote_average DESC);
 CREATE INDEX idx_movies_release_date ON movies(release_date DESC);
@@ -367,11 +401,26 @@ CREATE INDEX idx_reviews_user_id ON reviews(user_id);
 CREATE INDEX idx_watchlist_user_id ON user_watchlist(user_id);
 CREATE INDEX idx_watchlist_movie_id ON user_watchlist(movie_id);
 CREATE INDEX idx_watchlist_tv_id ON user_watchlist(tv_id);
-
+CREATE UNIQUE INDEX idx_watchlist_user_movie
+ON user_watchlist(user_id, movie_id)
+WHERE movie_id IS NOT NULL;
+CREATE UNIQUE INDEX idx_watchlist_user_tv
+ON user_watchlist(user_id, tv_id)
+WHERE tv_id IS NOT NULL;
 -- Refresh tokens
 CREATE INDEX idx_refresh_tokens_user_id ON refresh_tokens(user_id);
 
 -- +goose Down
+
+DROP INDEX IF EXISTS idx_notifications_recipient_unread;
+
+DROP INDEX IF EXISTS idx_notifications_event_id;
+
+DROP INDEX IF EXISTS idx_notifications_recipient_created;
+
+DROP INDEX IF EXISTS idx_events_event_type;
+
+DROP INDEX IF EXISTS idx_events_created_at;
 DROP TABLE IF EXISTS refresh_tokens CASCADE;
 DROP TABLE IF EXISTS user_watchlist CASCADE;
 DROP TABLE IF EXISTS reviews CASCADE;
@@ -386,6 +435,6 @@ DROP TABLE IF EXISTS movies CASCADE;
 DROP TABLE IF EXISTS users CASCADE;
 DROP TABLE IF EXISTS tv_videos CASCADE;
 DROP TABLE IF EXISTS tv_credits CASCADE;
-DROP TABLE IF EXISTS webhook_events  CASCADE;
+DROP TABLE IF EXISTS events  CASCADE;
 DROP TABLE IF EXISTS notifications  CASCADE;
 DROP TABLE IF EXISTS review_reports, review_comments, review_likes, review_votes;

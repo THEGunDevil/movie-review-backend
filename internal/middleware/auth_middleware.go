@@ -41,22 +41,51 @@ func setUserContext(c *gin.Context, userUUID uuid.UUID, user gen.User) {
 func AuthMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		log.Println("🔹 AuthMiddleware started")
+
+		// ১. Authorization header থেকে token নিন
 		authHeader := c.GetHeader("Authorization")
-		if authHeader == "" {
+		tokenString := ""
+
+		if authHeader != "" {
+			parts := strings.SplitN(authHeader, " ", 2)
+			if len(parts) == 2 && strings.EqualFold(parts[0], "Bearer") {
+				tokenString = parts[1]
+			}
+		}
+
+		// ২. Header না পেলে cookie থেকে token নিন (SSE-র জন্য)
+		if tokenString == "" {
+			cookie, err := c.Cookie("access_token")
+			if err == nil && cookie != "" {
+				tokenString = cookie
+				log.Println("✅ Token found in cookie")
+			}
+		}
+
+		// ৩. এখনো না পেলে query parameter থেকে নিন (EventSource-এর জন্য)
+		if tokenString == "" {
+			tokenString = c.Query("token")
+			if tokenString != "" {
+				log.Println("✅ Token found in query parameter")
+			}
+		}
+
+		if tokenString == "" {
 			log.Println("❌ Authorization header missing")
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "authorization header missing"})
 			return
 		}
-		log.Println("✅ Authorization header found")
 
-		parts := strings.SplitN(authHeader, " ", 2)
-		if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
-			log.Printf("❌ Invalid auth header format: %v\n", authHeader)
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid authorization header format"})
+		// Bearer prefix সরান (যদি থাকে)
+		tokenString = strings.TrimPrefix(tokenString, "Bearer ")
+		tokenString = strings.TrimSpace(tokenString)
+
+		if tokenString == "" {
+			log.Println("❌ Empty token")
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "empty token"})
 			return
 		}
 
-		tokenString := parts[1]
 		token, err := service.VerifyToken(tokenString, false)
 		if err != nil {
 			log.Printf("❌ Token verification failed: %v\n", err)
