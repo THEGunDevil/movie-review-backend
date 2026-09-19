@@ -29,8 +29,8 @@ func main() {
 
 	// ── Database ─────────────────────────────────────
 	cfg := config.LoadConfig()
-
-	db.LocalConnect(cfg)
+	db.Connect(cfg)
+	// db.LocalConnect(cfg)
 	defer db.Close()
 
 	store := db.NewStore(db.DB)
@@ -96,17 +96,17 @@ func main() {
 	}
 
 	// ── Notification Hub ────────────────────────────
-notificationHub := handlers.NewNotificationHub()
+	notificationHub := handlers.NewNotificationHub()
 
-notificationsHandler := &handlers.NotificationsHandler{
-	Queries: store.Queries,
-	Hub:     notificationHub,
-}
+	notificationsHandler := &handlers.NotificationsHandler{
+		Queries: store.Queries,
+		Hub:     notificationHub,
+	}
 
-reviewsHandler := &handlers.ReviewsHandler{
-	Queries: store.Queries,
-	Hub:     notificationHub,
-}
+	reviewsHandler := &handlers.ReviewsHandler{
+		Queries: store.Queries,
+		Hub:     notificationHub,
+	}
 
 	// ── Register Routes ─────────────────────────────
 	registerRoutes(
