@@ -42,7 +42,7 @@ func main() {
 	r.Use(
 		cors.New(cors.Config{
 			AllowOrigins: []string{
-				"http://localhost:3000", "https://movie-review-frontend-lac.vercel.app/",
+				"http://localhost:3000", "https://movie-review-frontend-lac.vercel.app",
 			},
 
 			AllowMethods: []string{
